@@ -303,7 +303,7 @@ func All(o *Opts) []Step {
 		packagesStep(),
 		userStep(),
 		swarmStep(),
-		registryImageStep(),
+		dockerImagesStep(),
 		cloneStep("megapolos-core", coreDir),
 		dbStep(coreDir),
 		npmStep("npm:core", coreDir, "megapolos-core", "package-lock.core.json", "install"),
@@ -313,7 +313,7 @@ func All(o *Opts) []Step {
 	if o.AddSelfNode {
 		// bootstrap = платформенная оркестрация из install.ts:
 		// нода → INIT → PREPARE FOR CORE → INSTALL REGISTRY → (опц.) деплой GUI-приложения
-		steps = append(steps, bootstrapStep(coreDir))
+		steps = append(steps, bootstrapStep())
 	}
 	if o.GUI && !o.GUIApp {
 		// static GUI: клон/сборка фронта и nginx на этой машине
