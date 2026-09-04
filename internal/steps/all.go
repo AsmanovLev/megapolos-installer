@@ -303,7 +303,6 @@ func All(o *Opts) []Step {
 		packagesStep(),
 		userStep(),
 		swarmStep(),
-		ansibleCollectionsStep(),
 		registryImageStep(),
 		cloneStep("megapolos-core", coreDir),
 		dbStep(coreDir),
@@ -353,8 +352,7 @@ func packagesStep() Step {
 				sys.DpkgInstalled(c, c.Ex, fmt.Sprintf("postgresql-%d", c.O.PgMajor)) &&
 				sys.CommandExists(c, c.Ex, "docker") && sys.CommandExists(c, c.Ex, "ansible") &&
 				sys.DpkgInstalled(c, c.Ex, "docker-compose-v2") &&
-				sys.DpkgInstalled(c, c.Ex, "python3-docker") && sys.DpkgInstalled(c, c.Ex, "python3-passlib") &&
-				sys.CommandExists(c, c.Ex, "ts-node") {
+				sys.DpkgInstalled(c, c.Ex, "python3-docker") && sys.DpkgInstalled(c, c.Ex, "python3-passlib") {
 				return true, "node/postgres/docker/ansible уже на месте"
 			}
 			return false, ""
@@ -396,20 +394,8 @@ func packagesStep() Step {
 			} else {
 				shTolerant(c, w, "npm config delete registry")
 			}
-			// бандл: npm-кэш root (глобальные nodemon/ts-node)
-			if c.O.BundleDir != "" {
-				cache := filepath.Join(c.O.BundleDir, "npm-cache-root.tar.gz")
-				if !sys.FileExists(c, c.Ex, cache) {
-					cache = filepath.Join(c.O.BundleDir, "npm-cache.tar.gz")
-				}
-				if sys.FileExists(c, c.Ex, cache) {
-					fmt.Fprintln(w, "бандл-режим: разворачиваю npm-кэш root")
-					shTolerant(c, w, fmt.Sprintf("tar xzf %s -C /root/", cache)) // внутри .npm/
-				}
-			}
-			if err := sh(c, w, "npm install -g "+npmOffline(c)+" nodemon ts-node"); err != nil {
-				return err
-			}
+			// глобальный nodemon/ts-node НЕ нужны: prod/bootstrap берут ts-node
+			// из локальных node_modules core (npm run резолвит .bin)
 			// --- postgresql ---
 			pgPkg := fmt.Sprintf("postgresql-%d", c.O.PgMajor)
 			if !sys.DpkgInstalled(c, c.Ex, pgPkg) {

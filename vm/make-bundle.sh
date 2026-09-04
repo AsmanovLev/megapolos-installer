@@ -6,7 +6,6 @@
 #   install.sh            — bash-установщик (legacy/запасной)
 #   debs/*.deb            — все скачанные пакеты (ставятся через dpkg -i)
 #   npm-cache.tar.gz      — npm-кэш сервисного юзера (npm install --offline)
-#   npm-cache-root.tar.gz — npm-кэш root (глобальные nodemon/ts-node)
 #   repos/*.git           — git-репозитории
 #   pg/newpostgresql.sql  — дамп БД
 #   package-lock.*.json   — lock-файлы (в git их нет, а npm --offline требует lock)
@@ -36,10 +35,6 @@ echo "== npm-кэш из VM"
 $SSH 'sudo -u megapolos tar czf /tmp/npm-cache.tar.gz -C /home/megapolos .npm'
 $SCP megapolos@localhost:/tmp/npm-cache.tar.gz "$BUNDLE/npm-cache.tar.gz"
 $SSH 'rm -f /tmp/npm-cache.tar.gz'
-# root-кэш (глобальные nodemon/ts-node ставятся от root)
-$SSH 'sudo tar czf /tmp/npm-cache-root.tar.gz -C /root .npm'
-$SCP megapolos@localhost:/tmp/npm-cache-root.tar.gz "$BUNDLE/npm-cache-root.tar.gz"
-$SSH 'sudo rm -f /tmp/npm-cache-root.tar.gz'
 # node-gyp headers (sqlite3 компилируется из исходников; без кэша node-gyp
 # качает headers с nodejs.org — при мёртвой сети виснет бесконечно)
 if $SSH 'test -d /home/megapolos/.cache/node-gyp'; then
@@ -51,15 +46,8 @@ else
   echo "WARN: в VM нет ~/.cache/node-gyp — sqlite3 в оффлайне не соберётся" >&2
 fi
 
-# ansible-коллекции (community.docker/general/crypto) — galaxy.ansible.com в оффлайне недоступен
-if $SSH 'sudo test -d /root/.ansible/collections/ansible_collections/community'; then
-  echo "== ansible-коллекции из VM"
-  $SSH 'sudo tar czf /tmp/ansible-collections.tar.gz -C /root .ansible'
-  $SCP megapolos@localhost:/tmp/ansible-collections.tar.gz "$BUNDLE/ansible-collections.tar.gz"
-  $SSH 'sudo rm -f /tmp/ansible-collections.tar.gz'
-else
-  echo "WARN: в VM нет /root/.ansible — bootstrap в оффлайне не сможет INIT ноды" >&2
-fi
+# (ansible-коллекции community.* не бандлим: ubuntu-пакет ansible уже содержит их
+#  в /usr/lib/python3/dist-packages/ansible_collections)
 
 # docker-образ registry:2 (INSTALL REGISTRY тянет его с hub.docker.com)
 mkdir -p "$BUNDLE/docker"

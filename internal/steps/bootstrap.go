@@ -28,7 +28,7 @@ func bootstrapStep(coreDir string) Step {
 	marker := func(o *Opts) string { return filepath.Join(o.InstallDir, ".megapolos-bootstrap") }
 	return StepFunc{
 		N: "bootstrap",
-		D: []string{"npm:core", "config:core", "db", "swarm", "ansible-collections", "registry-image"},
+		D: []string{"npm:core", "config:core", "db", "swarm", "registry-image"},
 		DetectF: func(c *Ctx) (bool, string) {
 			mark := mode(c.O) + "|localhost"
 			b, err := os.ReadFile(marker(c.O))
@@ -109,36 +109,6 @@ func swarmStep() Step {
 			return sh(c, w, `IP=$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
 [ -z "$IP" ] && IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 docker swarm init ${IP:+--advertise-addr "$IP"}`)
-		},
-	}
-}
-
-// ansibleCollectionsStep: коллекции для плейбуков платформы
-// (community.docker/general/crypto). Онлайн — galaxy, оффлайн — из бандла.
-func ansibleCollectionsStep() Step {
-	want := []string{"docker", "general", "crypto"}
-	installed := func(c *Ctx) bool {
-		for _, col := range want {
-			if !sys.FileExists(c, c.Ex, "/root/.ansible/collections/ansible_collections/community/"+col) {
-				return false
-			}
-		}
-		return true
-	}
-	return StepFunc{
-		N: "ansible-collections", D: []string{"packages"},
-		DetectF: func(c *Ctx) (bool, string) {
-			if installed(c) {
-				return true, "коллекции community.{docker,general,crypto} на месте"
-			}
-			return false, ""
-		},
-		RunF: func(c *Ctx, w io.Writer) error {
-			bundleTar := filepath.Join(c.O.BundleDir, "ansible-collections.tar.gz")
-			if c.O.BundleDir != "" && sys.FileExists(c, c.Ex, bundleTar) {
-				return sh(c, w, "tar xzf "+bundleTar+" -C /root")
-			}
-			return sh(c, w, "for i in 1 2 3; do ansible-galaxy collection install community.docker community.general community.crypto && exit 0; echo \"retry $i\"; sleep 5; done; exit 1")
 		},
 	}
 }
