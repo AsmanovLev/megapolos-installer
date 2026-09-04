@@ -302,15 +302,22 @@ func All(o *Opts) []Step {
 		},
 		packagesStep(),
 		userStep(),
+		swarmStep(),
+		ansibleCollectionsStep(),
+		registryImageStep(),
 		cloneStep("megapolos-core", coreDir),
 		dbStep(coreDir),
 		npmStep("npm:core", coreDir, "megapolos-core", "package-lock.core.json", "install"),
 		coreConfigStep(coreDir),
-		systemdStep(coreDir, guiDir, o.GUI),
 		tokenStep(),
 	}
-	if o.GUI {
-		// GUI опционален: клон/сборка фронта и nginx только при включённом GUI
+	if o.AddSelfNode {
+		// bootstrap = платформенная оркестрация из install.ts:
+		// нода → INIT → PREPARE FOR CORE → INSTALL REGISTRY → (опц.) деплой GUI-приложения
+		steps = append(steps, bootstrapStep(coreDir))
+	}
+	if o.GUI && !o.GUIApp {
+		// static GUI: клон/сборка фронта и nginx на этой машине
 		steps = append(steps,
 			cloneStep("megapolos-gui", guiDir),
 			guiConfigStep(guiDir),
@@ -321,9 +328,7 @@ func All(o *Opts) []Step {
 			steps = append(steps, guiTLSStep(coreDir, guiDir))
 		}
 	}
-	if o.AddSelfNode {
-		steps = append(steps, selfNodeStep())
-	}
+	steps = append(steps, systemdStep(coreDir, guiDir, o.GUI && !o.GUIApp))
 	if o.BaseDomain != "" {
 		steps = append(steps, baseDomainStep())
 	}
@@ -347,6 +352,8 @@ func packagesStep() Step {
 			if nodeOK(c) &&
 				sys.DpkgInstalled(c, c.Ex, fmt.Sprintf("postgresql-%d", c.O.PgMajor)) &&
 				sys.CommandExists(c, c.Ex, "docker") && sys.CommandExists(c, c.Ex, "ansible") &&
+				sys.DpkgInstalled(c, c.Ex, "docker-compose-v2") &&
+				sys.DpkgInstalled(c, c.Ex, "python3-docker") && sys.DpkgInstalled(c, c.Ex, "python3-passlib") &&
 				sys.CommandExists(c, c.Ex, "ts-node") {
 				return true, "node/postgres/docker/ansible уже на месте"
 			}
@@ -426,10 +433,16 @@ func packagesStep() Step {
 				return err
 			}
 			// --- docker + ansible ---
-			if !sys.CommandExists(c, c.Ex, "docker") || !sys.CommandExists(c, c.Ex, "ansible") {
-				if err := sh(c, w, aptCmd+" install docker.io ansible"); err != nil {
+			// docker-compose-v2: registry платформы поднимается через docker compose
+			if !sys.CommandExists(c, c.Ex, "docker") || !sys.CommandExists(c, c.Ex, "ansible") ||
+				!sys.DpkgInstalled(c, c.Ex, "docker-compose-v2") {
+				if err := sh(c, w, aptCmd+" install docker.io docker-compose-v2 ansible"); err != nil {
 					return err
 				}
+			}
+			// python-зависимости для ansible-модулей платформы (docker, htpasswd, crypto)
+			if err := sh(c, w, aptCmd+" install python3-docker python3-passlib python3-cryptography python3-jsondiff"); err != nil {
+				return err
 			}
 			return sh(c, w, "systemctl enable --now docker")
 		},
@@ -751,7 +764,7 @@ func guiTLSStep(coreDir, guiDir string) Step {
 				return false, ""
 			}
 			site, err := os.ReadFile("/etc/nginx/sites-available/megapolos-gui")
-			if err != nil || !strings.Contains(string(site), "443 ssl") {
+			if err != nil || !strings.Contains(string(site), "4443 ssl") { // 4443 — наша схема; 80/443 занимает nginx ноды
 				return false, ""
 			}
 			if !outOK(c, "systemctl is-active -q nginx") {

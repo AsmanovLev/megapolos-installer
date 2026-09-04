@@ -138,6 +138,8 @@ func main() {
 		source      = flag.String("source", envOr("MEGAPOLOS_GIT_BASE", "auto"), "auto | local | gitlab | базовый URL репозиториев")
 		apiURL      = flag.String("api-url", envOr("MEGAPOLOS_API_URL", ""), "URL API для GUI (пусто = http://<lan-ip>:5100)")
 		guiOn       = flag.Bool("gui", envOr("MEGAPOLOS_GUI", "true") != "false", "ставить GUI на эту машину (nginx :80)")
+		guiApp      = flag.Bool("gui-app", envOr("MEGAPOLOS_GUI_APP", "false") == "true", "GUI как приложение платформы (домен+серты), а не статический nginx")
+		guiDomain   = flag.String("gui-domain", envOr("MEGAPOLOS_GUI_DOMAIN", ""), "домен GUI-приложения (пусто = gui.<base-domain>)")
 		guiTLS      = flag.Bool("gui-tls", envOr("MEGAPOLOS_GUI_TLS", "true") != "false", "HTTPS для GUI (серт Megapolos Root CA, :443)")
 		devMode     = flag.Bool("dev-mode", envBool("MEGAPOLOS_DEV_MODE", true), "devMode (все контейнеры на localhost)")
 		debug       = flag.Bool("debug", envBool("MEGAPOLOS_DEBUG", false), "debug-логи ядра")
@@ -243,6 +245,11 @@ func main() {
 		dbPass = randomHex(16)
 	}
 
+	guiDomainVal := *guiDomain
+	if guiDomainVal == "" && *guiApp {
+		guiDomainVal = "gui." + *baseDomain
+	}
+
 	opts := &steps.Opts{
 		GitBase:          gitBase,
 		CoreRef:          *coreRef,
@@ -260,7 +267,9 @@ func main() {
 		NpmRegistry:      npmRegistry,
 		NodeRootPassword: *nodePass,
 		BaseDomain:       *baseDomain,
-		GUI:              *guiOn,
+		GUI:              *guiOn || *guiApp,
+		GUIApp:           *guiApp,
+		GUIDomain:        guiDomainVal,
 		GUITLS:           *guiTLS,
 		LANIP:            lanIP,
 		Swap:             *swapMode,

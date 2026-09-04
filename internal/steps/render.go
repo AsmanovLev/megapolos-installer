@@ -24,6 +24,10 @@ func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool
 	}{
 		Secret:           secret,
 		ConnectionString: fmt.Sprintf("postgres://%s:%s@localhost:5432/%s", dbUser, dbPass, dbName),
+		// registry: локальный приватный registry платформы (install.ts INSTALL REGISTRY)
+		RegistryHost:     "localhost",
+		RegistryUser:     "megapolos",
+		RegistryPassword: "megapolos",
 		Debug:            debug,
 		DevMode:          devMode,
 		PublicSchema:     false,
@@ -64,9 +68,11 @@ WantedBy=multi-user.target
 }
 
 // RenderNginxSite — nginx-конфиг GUI.
+// GUI static nginx слушает 8080/4443: порты 80/443 в госте занимает
+// nginx-контейнер ноды (платформа, INIT) — там живут api. и app-виртхосты.
 func RenderNginxSite(guiBuildDir string) string {
 	return fmt.Sprintf(`server {
-    listen 80 default_server;
+    listen 8080 default_server;
     root %s;
     index index.html;
     client_max_body_size 10g;
@@ -80,8 +86,8 @@ func RenderNginxSite(guiBuildDir string) string {
 // проброса известен только хосту, редирект сломал бы его.
 func RenderNginxSiteTLS(guiBuildDir, crt, key string) string {
 	return fmt.Sprintf(`server {
-    listen 80 default_server;
-    listen 443 ssl default_server;
+    listen 8080 default_server;
+    listen 4443 ssl default_server;
     server_name _;
 
     ssl_certificate     %s;

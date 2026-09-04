@@ -106,7 +106,15 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddInputField("core ref (ветка/тег/sha)", o.CoreRef, 40, nil, func(s string) { o.CoreRef = strings.TrimSpace(s) })
 	form.AddInputField("gui ref (ветка/тег/sha)", o.GUIRef, 40, nil, func(s string) { o.GUIRef = strings.TrimSpace(s) })
 	form.AddInputField("API URL для GUI", o.APIURL, 40, nil, func(s string) { o.APIURL = strings.TrimSpace(s) })
-	form.AddCheckbox("GUI на этой машине (nginx :80)", o.GUI, func(b bool) { o.GUI = b })
+	guiModes := []string{"static: nginx на этой машине (быстро, оффлайн)", "app: приложение платформы с доменом и сертами (онлайн)", "none: без GUI"}
+	guiIdx := 0
+	if o.GUIApp {
+		guiIdx = 1
+	} else if !o.GUI {
+		guiIdx = 2
+	}
+	form.AddDropDown("GUI", guiModes, guiIdx, nil)
+	form.AddInputField("Домен GUI (app-режим)", o.GUIDomain, 40, nil, func(s string) { o.GUIDomain = strings.TrimSpace(s) })
 	form.AddCheckbox("HTTPS для GUI (серт Megapolos CA, :443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
@@ -121,7 +129,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddInputField("Базовый домен", o.BaseDomain, 40, nil, func(s string) { o.BaseDomain = strings.TrimSpace(s) })
 	form.AddInputField("Имя БД", o.DBName, 40, nil, func(s string) { o.DBName = strings.TrimSpace(s) })
 	form.AddInputField("Пользователь БД", o.DBUser, 40, nil, func(s string) { o.DBUser = strings.TrimSpace(s) })
-	form.AddCheckbox("Себя-нода (root@127.0.0.1:22)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
+	form.AddCheckbox("Bootstrap ноды (нода + INIT + registry через install.ts)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
 	form.AddPasswordField("Пароль root для ноды", o.NodeRootPassword, 40, '*', func(s string) { o.NodeRootPassword = s })
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник репозиториев").(*tview.DropDown).GetCurrentOption()
@@ -129,6 +137,11 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 			o.GitBase = "http://" + o.HostIP + ":8000"
 		} else {
 			o.GitBase = "https://gitlab.com/megapolos"
+		}
+		gi, _ := form.GetFormItemByLabel("GUI").(*tview.DropDown).GetCurrentOption()
+		o.GUI, o.GUIApp = gi != 2, gi == 1
+		if o.GUIApp && o.GUIDomain == "" {
+			o.GUIDomain = "gui." + o.BaseDomain
 		}
 		if o.CoreRef == "" || o.GUIRef == "" {
 			runErr = fmt.Errorf("core/gui ref не могут быть пустыми")

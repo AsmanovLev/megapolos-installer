@@ -51,6 +51,25 @@ else
   echo "WARN: в VM нет ~/.cache/node-gyp — sqlite3 в оффлайне не соберётся" >&2
 fi
 
+# ansible-коллекции (community.docker/general/crypto) — galaxy.ansible.com в оффлайне недоступен
+if $SSH 'sudo test -d /root/.ansible/collections/ansible_collections/community'; then
+  echo "== ansible-коллекции из VM"
+  $SSH 'sudo tar czf /tmp/ansible-collections.tar.gz -C /root .ansible'
+  $SCP megapolos@localhost:/tmp/ansible-collections.tar.gz "$BUNDLE/ansible-collections.tar.gz"
+  $SSH 'sudo rm -f /tmp/ansible-collections.tar.gz'
+else
+  echo "WARN: в VM нет /root/.ansible — bootstrap в оффлайне не сможет INIT ноды" >&2
+fi
+
+# docker-образ registry:2 (INSTALL REGISTRY тянет его с hub.docker.com)
+mkdir -p "$BUNDLE/docker"
+if $SSH 'sudo docker image inspect registry:2 >/dev/null 2>&1'; then
+  echo "== docker-образ registry:2 из VM"
+  $SSH 'sudo docker save registry:2 | gzip' > "$BUNDLE/docker/registry-2.tar.gz"
+else
+  echo "WARN: в VM нет образа registry:2 — прогони онлайн-установку с bootstrap" >&2
+fi
+
 echo "== apt-пакеты из VM (/var/cache/apt/archives)"
 $SSH 'sudo bash -c "cd /var/cache/apt/archives && tar czf /tmp/apt-debs.tar.gz --exclude=lock --exclude=partial ."'
 $SCP megapolos@localhost:/tmp/apt-debs.tar.gz /tmp/megapolos-apt-debs.tar.gz

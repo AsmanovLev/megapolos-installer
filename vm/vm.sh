@@ -54,8 +54,9 @@ start_vm() {
     echo "запущена (bridge ${BRIDGE:-br0}, mac $MAC). LAN-IP: ./vm/vm.sh $NAME status"
     return
   fi
-  local fwds="hostfwd=tcp::$SSH_PORT-:22,hostfwd=tcp::$GUI_PORT-:80,hostfwd=tcp::$API_PORT-:5100"
-  [ -n "${GUI_TLS_PORT:-}" ] && fwds="$fwds,hostfwd=tcp::$GUI_TLS_PORT-:443"
+  # GUI static nginx в госте: 8080/4443 (80/443 заняты nginx-контейнером ноды платформы)
+  local fwds="hostfwd=tcp::$SSH_PORT-:22,hostfwd=tcp::$GUI_PORT-:8080,hostfwd=tcp::$API_PORT-:5100"
+  [ -n "${GUI_TLS_PORT:-}" ] && fwds="$fwds,hostfwd=tcp::$GUI_TLS_PORT-:4443"
   qemu-system-x86_64 \
     -machine q35,accel=kvm -cpu host -m "$RAM" -smp "$CPUS" \
     -drive "file=$OVERLAY,if=virtio,format=qcow2" \

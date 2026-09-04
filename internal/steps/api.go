@@ -52,62 +52,6 @@ func apiQuery(c *Ctx, token, query string, variables map[string]any) (json.RawMe
 	return parsed.Data, nil
 }
 
-// selfNodeStep: добавить этот хост нодой в мегаполос (root@127.0.0.1:22).
-// Платформа ходит на ноды по ssh2, порт 22 зашит в коде (ExternalProcess.ts),
-// auth только по паролю (NodeInput: host/user/password).
-func selfNodeStep() Step {
-	return StepFunc{
-		N: "self-node", D: []string{"token"},
-		DetectF: func(c *Ctx) (bool, string) {
-			if c.O.Token == "" {
-				return false, ""
-			}
-			found, err := nodeExists(c, c.O.Token, c.O.Hostname)
-			if err == nil && found {
-				return true, "нода " + c.O.Hostname + " уже существует"
-			}
-			return false, ""
-		},
-		RunF: func(c *Ctx, w io.Writer) error {
-			if err := sh(c, w, "echo 'root:"+c.O.NodeRootPassword+"' | chpasswd"); err != nil {
-				return err
-			}
-			if err := writeFile(c, w, "/etc/ssh/sshd_config.d/60-megapolos-root.conf", RenderSshdDropin(), 0o644, ""); err != nil {
-				return err
-			}
-			// cloud-init дроп-ины запрещают парольную аутентификацию
-			if err := sh(c, w, "rm -f /etc/ssh/sshd_config.d/50-cloud-init.conf /etc/ssh/sshd_config.d/60-cloudimg-settings.conf"); err != nil {
-				return err
-			}
-			if err := sh(c, w, "sshd -t && (systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || true)"); err != nil {
-				return err
-			}
-			found, err := nodeExists(c, c.O.Token, c.O.Hostname)
-			if err != nil {
-				return fmt.Errorf("getAllNode: %w", err)
-			}
-			if found {
-				fmt.Fprintf(w, "нода %s уже существует — пропускаю\n", c.O.Hostname)
-				return nil
-			}
-			data, err := apiQueryWait(c, w, c.O.Token,
-				"mutation CreateNode($values: NodeInput!) { createNode(values: $values) { id name autoCreateInstances } }",
-				map[string]any{"values": map[string]any{
-					"name":                c.O.Hostname,
-					"host":                "127.0.0.1",
-					"user":                "root",
-					"password":            c.O.NodeRootPassword,
-					"autoCreateInstances": true, // нода по умолчанию для инстансов
-				}})
-			if err != nil {
-				return fmt.Errorf("createNode: %w", err)
-			}
-			fmt.Fprintf(w, "нода %s добавлена: %s\n", c.O.Hostname, data)
-			return nil
-		},
-	}
-}
-
 // apiQueryWait — apiQuery с ожиданием поднятия API: после старта сервиса
 // JWT печатается в лог раньше, чем GraphQL начинает слушать :5100.
 // Ретраим только сетевые ошибки (connect refused и т.п.), до ~2 минут.
@@ -193,28 +137,6 @@ func domainExists(c *Ctx, token, name string) (bool, error) {
 	}
 	for _, d := range parsed.GetAllDomain {
 		if d.Name == name {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// nodeExists — есть ли нода с таким именем.
-func nodeExists(c *Ctx, token, name string) (bool, error) {
-	data, err := apiQueryWait(c, io.Discard, token, "{ getAllNode { id name } }", nil)
-	if err != nil {
-		return false, err
-	}
-	var parsed struct {
-		GetAllNode []struct {
-			Name string `json:"name"`
-		} `json:"getAllNode"`
-	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		return false, err
-	}
-	for _, n := range parsed.GetAllNode {
-		if n.Name == name {
 			return true, nil
 		}
 	}

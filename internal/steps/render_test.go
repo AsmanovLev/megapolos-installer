@@ -47,8 +47,9 @@ func TestRenderCoreUnit_Root(t *testing.T) {
 }
 
 func TestRenderNginxSite(t *testing.T) {
+	// GUI static nginx слушает 8080: 80/443 в госте занимает nginx-контейнер ноды
 	s := RenderNginxSite("/opt/megapolos/megapolos-gui/build")
-	if !strings.Contains(s, "listen 80 default_server;") || !strings.Contains(s, "root /opt/megapolos/megapolos-gui/build;") {
+	if !strings.Contains(s, "listen 8080 default_server;") || !strings.Contains(s, "root /opt/megapolos/megapolos-gui/build;") {
 		t.Errorf("site:\n%s", s)
 	}
 }
