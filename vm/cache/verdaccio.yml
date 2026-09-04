@@ -1,0 +1,19 @@
+# verdaccio — кэширующее npm-зеркало для оффлайн-установки Megapolos
+storage: ./npm
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+    timeout: 60s
+    max_fails: 10
+    fail_timeout: 10s
+packages:
+  '**':
+    access: $all
+    publish: $authenticated
+    proxy: npmjs
+server:
+  keepAliveTimeout: 60
+log:
+  type: stdout
+  format: pretty
+  level: warn

@@ -1,0 +1,15 @@
+# контекст сборки бандла — только нужное
+.git
+vm/images
+vm/run
+vm/cache
+bundle/debs
+bundle/repos
+bundle/pg
+bundle/installer
+bundle/install.sh
+bundle/INFO.txt
+bundle/*.sqfs
+bundle/*.tar.gz
+bundle/package-lock.*.json
+megapolos-installer

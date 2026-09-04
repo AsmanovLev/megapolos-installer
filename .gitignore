@@ -1,0 +1,19 @@
+# собранный бинарь
+/megapolos-installer
+
+# артефакты бандла (генерируются vm/make-bundle*.sh)
+/bundle/debs/
+/bundle/repos/
+/bundle/pg/
+/bundle/installer
+/bundle/install.sh
+/bundle/INFO.txt
+/bundle/*.sqfs
+/bundle/*.tar.gz
+/bundle/package-lock.*.json
+
+# VM: образы, рантайм, кэши
+/vm/images/
+/vm/run/
+/vm/cache/*
+!/vm/cache/verdaccio.yml
