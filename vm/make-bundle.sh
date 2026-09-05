@@ -28,7 +28,8 @@ $SSH 'test -d /opt/megapolos/megapolos-core/node_modules && test -d /opt/megapol
   || { echo "В VM нет установленного megapolos (node_modules/.npm). Сначала установи." >&2; exit 1; }
 
 echo "== чищу и создаю bundle/"
-rm -rf "$BUNDLE"
+# чистим артефакты прошлой сборки, кроме Dockerfile (он трекается в git)
+find "$BUNDLE" -mindepth 1 -maxdepth 1 ! -name Dockerfile -exec rm -rf {} +
 mkdir -p "$BUNDLE/debs" "$BUNDLE/repos" "$BUNDLE/pg"
 
 echo "== npm-кэш из VM"
