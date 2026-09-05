@@ -35,6 +35,23 @@ echo "== npm-кэш из VM"
 $SSH 'sudo -u megapolos tar czf /tmp/npm-cache.tar.gz -C /home/megapolos .npm'
 $SCP megapolos@localhost:/tmp/npm-cache.tar.gz "$BUNDLE/npm-cache.tar.gz"
 $SSH 'rm -f /tmp/npm-cache.tar.gz'
+
+# готовые node_modules + сборка GUI (registry-agnostic fast path установщика:
+# оффлайн-установка = распаковка, без npm install/vite build)
+echo "== node_modules и build из VM"
+$SSH 'sudo -u megapolos tar czf /tmp/nm-core.tar.gz -C /opt/megapolos/megapolos-core node_modules'
+$SCP megapolos@localhost:/tmp/nm-core.tar.gz "$BUNDLE/node_modules-megapolos-core.tar.gz"
+$SSH 'rm -f /tmp/nm-core.tar.gz'
+$SSH 'sudo -u megapolos tar czf /tmp/nm-gui.tar.gz -C /opt/megapolos/megapolos-gui node_modules'
+$SCP megapolos@localhost:/tmp/nm-gui.tar.gz "$BUNDLE/node_modules-megapolos-gui.tar.gz"
+$SSH 'rm -f /tmp/nm-gui.tar.gz'
+if $SSH 'test -f /opt/megapolos/megapolos-gui/build/index.html'; then
+  $SSH 'sudo -u megapolos tar czf /tmp/gui-build.tar.gz -C /opt/megapolos/megapolos-gui build'
+  $SCP megapolos@localhost:/tmp/gui-build.tar.gz "$BUNDLE/gui-build.tar.gz"
+  $SSH 'rm -f /tmp/gui-build.tar.gz'
+else
+  echo "WARN: в VM нет собранного GUI (build/) — оффлайн будет собирать через vite" >&2
+fi
 # node-gyp headers (sqlite3 компилируется из исходников; без кэша node-gyp
 # качает headers с nodejs.org — при мёртвой сети виснет бесконечно)
 if $SSH 'test -d /home/megapolos/.cache/node-gyp'; then
@@ -49,14 +66,17 @@ fi
 # (ansible-коллекции community.* не бандлим: ubuntu-пакет ansible уже содержит их
 #  в /usr/lib/python3/dist-packages/ansible_collections)
 
-# docker-образ registry:2 (INSTALL REGISTRY тянет его с hub.docker.com)
+# docker-образы (registry платформы + базовые для сборки приложений в контуре)
 mkdir -p "$BUNDLE/docker"
-if $SSH 'sudo docker image inspect registry:2 >/dev/null 2>&1'; then
-  echo "== docker-образ registry:2 из VM"
-  $SSH 'sudo docker save registry:2 | gzip' > "$BUNDLE/docker/registry-2.tar.gz"
-else
-  echo "WARN: в VM нет образа registry:2 — прогони онлайн-установку с bootstrap" >&2
-fi
+for img in registry:2 nginx:latest node:18 busybox:1.35; do
+  tar_name="$(echo "$img" | tr ':/' '--').tar.gz"
+  if $SSH "sudo docker image inspect $img >/dev/null 2>&1"; then
+    echo "== docker-образ $img из VM"
+    $SSH "sudo docker save $img | gzip" > "$BUNDLE/docker/$tar_name"
+  else
+    echo "WARN: в VM нет образа $img — оффлайн-деплой приложений будет неполным" >&2
+  fi
+done
 
 echo "== apt-пакеты из VM (/var/cache/apt/archives)"
 $SSH 'sudo bash -c "cd /var/cache/apt/archives && tar czf /tmp/apt-debs.tar.gz --exclude=lock --exclude=partial ."'

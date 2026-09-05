@@ -48,6 +48,9 @@ start_http() {
 
 start_apt_cacher() {
   mkdir -p "$CACHE/apt-cacher"
+  # важно: каталог должен принадлежать uid 100 внутри rootless-контейнера,
+  # иначе "storage error [Cannot create cache files]" (apt-cacher-ng uid=100)
+  if command -v podman >/dev/null; then podman unshare chown -R 100:101 "$CACHE/apt-cacher" 2>/dev/null || true; fi
   if ! ctr ps --format '{{.Names}}' | grep -qx megapolos-apt-cacher; then
     if ! ctr image exists megapolos/apt-cacher-ng:local; then
       echo "==> собираю образ apt-cacher-ng (один раз, нужен интернет)"

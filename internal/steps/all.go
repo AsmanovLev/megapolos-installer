@@ -242,8 +242,8 @@ func All(o *Opts) []Step {
 			N: "base", D: []string{"bundle-debs"},
 			DetectF: func(c *Ctx) (bool, string) {
 				pkgs := []string{"curl", "ca-certificates", "gnupg", "lsb-release", "git", "build-essential", "python3", "openssl"}
-				if c.O.GUI {
-					pkgs = append(pkgs, "nginx") // nginx нужен только для отдачи GUI
+				if c.O.GUI && !c.O.GUIApp {
+					pkgs = append(pkgs, "nginx") // nginx только для static GUI (app-режим: nginx-контейнер ноды)
 				}
 				for _, p := range pkgs {
 					if !sys.DpkgInstalled(c, c.Ex, p) {
@@ -261,8 +261,8 @@ func All(o *Opts) []Step {
 				}
 				shTolerant(c, w, "apt-get update")
 				pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl"
-				if c.O.GUI {
-					pkgs += " nginx" // nginx нужен только для отдачи GUI
+				if c.O.GUI && !c.O.GUIApp {
+					pkgs += " nginx" // nginx только для static GUI (app-режим: nginx-контейнер ноды)
 				}
 				return sh(c, w, aptCmd+" install "+pkgs)
 			},
@@ -307,6 +307,7 @@ func All(o *Opts) []Step {
 		cloneStep("megapolos-core", coreDir),
 		dbStep(coreDir),
 		npmStep("npm:core", coreDir, "megapolos-core", "package-lock.core.json", "install"),
+		dbMigrateStep(coreDir),
 		coreConfigStep(coreDir),
 		tokenStep(),
 	}
@@ -527,6 +528,31 @@ func cloneStep(repo, dir string) Step {
 	}
 }
 
+// dbMigrateStep: схема БД → соответствие текущим entities.
+// Дамп в репо (install/newpostgresql.sql) отстаёт от кода (пример: repository.is_private);
+// миграций в платформе нет → mikro-orm schema:update. Толерантен к частичным ошибкам
+// (известный случай: DROP колонки с зависимым view — остальные операции применяются).
+func dbMigrateStep(coreDir string) StepFunc {
+	return StepFunc{
+		N: "db-migrate", D: []string{"db", "npm:core", "config:core"},
+		DetectF: func(c *Ctx) (bool, string) {
+			// дешёвая проверка по известному маркеру дрейфа
+			if outOK(c, fmt.Sprintf("sudo -u postgres psql -d %s -tAc \"SELECT 1 FROM information_schema.columns WHERE table_name='repository' AND column_name='is_private'\" | grep -q 1", c.O.DBName)) {
+				return true, "схема актуальна"
+			}
+			return false, ""
+		},
+		RunF: func(c *Ctx, w io.Writer) error {
+			if err := c.Ex.Run(c, sys.RunOpts{
+				Cmd: "npx mikro-orm schema:update --run", Dir: coreDir, User: c.O.SvcUser,
+			}, w); err != nil {
+				fmt.Fprintf(w, "WARN: schema:update завершился с ошибкой (часть операций могла примениться): %v\n", err)
+			}
+			return nil
+		},
+	}
+}
+
 // dbStep: роль, БД, дамп.
 func dbStep(coreDir string) StepFunc {
 	return StepFunc{
@@ -581,6 +607,17 @@ func npmStep(name, dir, repo, lockFile, installArgs string) Step {
 		N: name, D: []string{"clone:" + repo},
 		DetectF: func(c *Ctx) (bool, string) { return shaMarkerDetect(c, dir, "") },
 		RunF: func(c *Ctx, w io.Writer) error {
+			// быстрый путь: готовые node_modules из бандла (registry-agnostic,
+			// не зависит от ключей npm-кэша) — распаковка вместо npm install
+			nmTar := filepath.Join(c.O.BundleDir, "node_modules-"+repo+".tar.gz")
+			if c.O.BundleDir != "" && sys.FileExists(c, c.Ex, nmTar) {
+				fmt.Fprintf(w, "бандл: распаковываю готовые node_modules (%s)\n", repo)
+				if err := sh(c, w, fmt.Sprintf("tar xzf %s -C %s && chown -R %s:%s %s/node_modules", nmTar, dir, c.O.SvcUser, c.O.SvcUser, dir)); err != nil {
+					return err
+				}
+				writeSHAMarker(c, dir)
+				return nil
+			}
 			// npm --offline требует package-lock.json, а в git его нет — берём из бандла
 			if c.O.BundleDir != "" {
 				lock := filepath.Join(dir, "package-lock.json")
@@ -604,11 +641,12 @@ func npmStep(name, dir, repo, lockFile, installArgs string) Step {
 // guiConfigStep: public/config/config.json (server URL для браузера).
 // Отдельный лёгкий шаг: смена --api-url перерендерит конфиг без npm install.
 // Пишет и в build/ (то, что реально отдаёт nginx), если сборка уже есть.
+// Идёт ПОСЛЕ build:gui — иначе распакованная/свежая сборка зальёт конфиг донорским.
 func guiConfigStep(guiDir string) Step {
 	pub := filepath.Join(guiDir, "public", "config", "config.json")
 	bin := filepath.Join(guiDir, "build", "config", "config.json")
 	return StepFunc{
-		N: "config:gui", D: []string{"clone:megapolos-gui"},
+		N: "config:gui", D: []string{"clone:megapolos-gui", "build:gui"},
 		DetectF: func(c *Ctx) (bool, string) {
 			want := RenderGUIConfig(c.O.APIURL)
 			b, err := os.ReadFile(pub)
@@ -666,6 +704,16 @@ func guiBuildStep(guiDir string) Step {
 			return shaMarkerDetect(c, guiDir, filepath.Join(guiDir, "build", "index.html"))
 		},
 		RunF: func(c *Ctx, w io.Writer) error {
+			// быстрый путь: готовая сборка GUI из бандла
+			buildTar := filepath.Join(c.O.BundleDir, "gui-build.tar.gz")
+			if c.O.BundleDir != "" && sys.FileExists(c, c.Ex, buildTar) {
+				fmt.Fprintln(w, "бандл: распаковываю готовую сборку GUI")
+				if err := sh(c, w, fmt.Sprintf("tar xzf %s -C %s && chown -R %s:%s %s/build", buildTar, guiDir, c.O.SvcUser, c.O.SvcUser, guiDir)); err != nil {
+					return err
+				}
+				writeSHAMarker(c, guiDir)
+				return nil
+			}
 			if err := asSvc(c, w, "cd "+guiDir+" && DISABLE_ESLINT_PLUGIN=true NODE_OPTIONS=--max-old-space-size=3072 npm run build"); err != nil {
 				return err
 			}
