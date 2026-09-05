@@ -105,3 +105,35 @@ func TestSanitize(t *testing.T) {
 		}
 	}
 }
+
+// TestInputFieldShowsCursor: сфокусированное поле ввода должно показывать
+// терминальный курсор на позиции текста (tview InputField → textArea.Draw →
+// screen.ShowCursor). Регрессия: «не вижу курсор в полях».
+func TestInputFieldShowsCursor(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(100, 30)
+	app := tview.NewApplication().SetScreen(screen)
+	form := tview.NewForm()
+	form.AddInputField("Поле", "abc", 40, nil, nil)
+	done := make(chan struct{})
+	go func() {
+		_ = app.SetRoot(form, true).Run()
+		close(done)
+	}()
+	defer func() { app.Stop(); <-done }()
+
+	// ждём отрисовки с курсором (до 2с)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_, _, vis := screen.GetCursor()
+		if vis {
+			return // курсор виден — ок
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_, _, vis := screen.GetCursor()
+	t.Fatalf("курсор не виден при фокусе на InputField (vis=%v)", vis)
+}

@@ -44,7 +44,7 @@ func defaultApp() *tview.Application {
 	if err != nil {
 		panic(err)
 	}
-	screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock) // заметный курсор в полях ввода
+	screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock) // заметный курсор в полях ввода (как в opencode)
 	screenFini = func() { screen.Fini() }
 	return tview.NewApplication().SetScreen(screen)
 }
@@ -115,7 +115,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	}
 	form.AddDropDown("GUI", guiModes, guiIdx, nil)
 	form.AddInputField("Домен GUI (app-режим)", o.GUIDomain, 40, nil, func(s string) { o.GUIDomain = strings.TrimSpace(s) })
-	form.AddCheckbox("HTTPS для GUI (серт Megapolos CA, :443)", o.GUITLS, func(b bool) { o.GUITLS = b })
+	form.AddCheckbox("HTTPS для GUI (серт Megapolos CA, :4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
 	swapInitial := o.Swap == "force" || ((o.Swap == "" || o.Swap == "auto") && localNeedSwap())
@@ -129,7 +129,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddInputField("Базовый домен", o.BaseDomain, 40, nil, func(s string) { o.BaseDomain = strings.TrimSpace(s) })
 	form.AddInputField("Имя БД", o.DBName, 40, nil, func(s string) { o.DBName = strings.TrimSpace(s) })
 	form.AddInputField("Пользователь БД", o.DBUser, 40, nil, func(s string) { o.DBUser = strings.TrimSpace(s) })
-	form.AddCheckbox("Bootstrap ноды (нода + INIT + registry через install.ts)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
+	form.AddCheckbox("Bootstrap ноды (нода + INIT + registry + DBMS через API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
 	form.AddPasswordField("Пароль root для ноды", o.NodeRootPassword, 40, '*', func(s string) { o.NodeRootPassword = s })
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник репозиториев").(*tview.DropDown).GetCurrentOption()
@@ -635,17 +635,23 @@ func showSummary(app *tview.Application, pages *tview.Pages, o *steps.Opts, logP
 	var sb strings.Builder
 	sb.WriteString("\n [green::b]Установка завершена[-:-:-]\n\n")
 	if o.GUI {
-		if o.VMGUIPort != "" {
-			fmt.Fprintf(&sb, " GUI (через проброс VM):  [yellow]http://localhost:%s/[-]\n", o.VMGUIPort)
-			if o.GUITLS && o.VMGUITLSPort != "" {
-				fmt.Fprintf(&sb, " GUI HTTPS:               [yellow]https://localhost:%s/[-]\n", o.VMGUITLSPort)
+		if o.GUIApp {
+			// app-режим: GUI обслуживает nginx ноды на :443 по домену
+			fmt.Fprintf(&sb, " GUI (приложение):        [yellow]https://%s/[-]\n", o.GUIDomain)
+		} else {
+			// static GUI: гость 8080/4443 (80/443 занимает nginx-контейнер ноды)
+			if o.VMGUIPort != "" {
+				fmt.Fprintf(&sb, " GUI (через проброс VM):  [yellow]http://localhost:%s/[-]\n", o.VMGUIPort)
+				if o.GUITLS && o.VMGUITLSPort != "" {
+					fmt.Fprintf(&sb, " GUI HTTPS:               [yellow]https://localhost:%s/[-]\n", o.VMGUITLSPort)
+				}
 			}
+			fmt.Fprintf(&sb, " GUI (LAN/внутри):        [yellow]http://%s:8080/[-]", ip)
+			if o.GUITLS {
+				fmt.Fprintf(&sb, "  и  [yellow]https://%s:4443/[-]", ip)
+			}
+			sb.WriteString("\n")
 		}
-		fmt.Fprintf(&sb, " GUI (LAN/внутри):        [yellow]http://%s/[-]", ip)
-		if o.GUITLS {
-			fmt.Fprintf(&sb, "  и  [yellow]https://%s/[-]", ip)
-		}
-		sb.WriteString("\n")
 	}
 	fmt.Fprintf(&sb, " API:                     [yellow]%s[-]\n", o.APIURL)
 	if o.VMAPIPort != "" {

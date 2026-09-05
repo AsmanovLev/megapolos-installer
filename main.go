@@ -137,10 +137,10 @@ func main() {
 		guiRef      = flag.String("gui-ref", envOr("MEGAPOLOS_GUI_REF", "main"), "ветка/тег/sha megapolos-gui")
 		source      = flag.String("source", envOr("MEGAPOLOS_GIT_BASE", "auto"), "auto | local | gitlab | базовый URL репозиториев")
 		apiURL      = flag.String("api-url", envOr("MEGAPOLOS_API_URL", ""), "URL API для GUI (пусто = http://<lan-ip>:5100)")
-		guiOn       = flag.Bool("gui", envOr("MEGAPOLOS_GUI", "true") != "false", "ставить GUI на эту машину (nginx :80)")
+		guiOn       = flag.Bool("gui", envOr("MEGAPOLOS_GUI", "true") != "false", "ставить GUI на эту машину (nginx :8080)")
 		guiApp      = flag.Bool("gui-app", envOr("MEGAPOLOS_GUI_APP", "false") == "true", "GUI как приложение платформы (домен+серты), а не статический nginx")
 		guiDomain   = flag.String("gui-domain", envOr("MEGAPOLOS_GUI_DOMAIN", ""), "домен GUI-приложения (пусто = gui.<base-domain>)")
-		guiTLS      = flag.Bool("gui-tls", envOr("MEGAPOLOS_GUI_TLS", "true") != "false", "HTTPS для GUI (серт Megapolos Root CA, :443)")
+		guiTLS      = flag.Bool("gui-tls", envOr("MEGAPOLOS_GUI_TLS", "true") != "false", "HTTPS для GUI (серт Megapolos Root CA, :4443)")
 		devMode     = flag.Bool("dev-mode", envBool("MEGAPOLOS_DEV_MODE", true), "devMode (все контейнеры на localhost)")
 		debug       = flag.Bool("debug", envBool("MEGAPOLOS_DEBUG", false), "debug-логи ядра")
 		dbName      = flag.String("db-name", envOr("MEGAPOLOS_DB_NAME", "megapolos"), "имя БД")
@@ -343,15 +343,20 @@ func main() {
 		ip = "127.0.0.1"
 	}
 	if opts.GUI {
-		if opts.VMGUIPort != "" {
-			fmt.Printf("  GUI (через проброс VM):  http://localhost:%s/\n", opts.VMGUIPort)
-			if opts.GUITLS && opts.VMGUITLSPort != "" {
-				fmt.Printf("  GUI HTTPS:               https://localhost:%s/\n", opts.VMGUITLSPort)
+		if opts.GUIApp {
+			fmt.Printf("  GUI (приложение):        https://%s/\n", opts.GUIDomain)
+		} else {
+			if opts.VMGUIPort != "" {
+				fmt.Printf("  GUI (через проброс VM):  http://localhost:%s/\n", opts.VMGUIPort)
+				if opts.GUITLS && opts.VMGUITLSPort != "" {
+					fmt.Printf("  GUI HTTPS:               https://localhost:%s/\n", opts.VMGUITLSPort)
+				}
 			}
-		}
-		fmt.Printf("  GUI (LAN/внутри):        http://%s/", ip)
-		if opts.GUITLS {
-			fmt.Printf("  и  https://%s/", ip)
+			// static GUI: гость 8080/4443 (80/443 занимает nginx-контейнер ноды)
+			fmt.Printf("  GUI (LAN/внутри):        http://%s:8080/", ip)
+			if opts.GUITLS {
+				fmt.Printf("  и  https://%s:4443/", ip)
+			}
 		}
 		fmt.Println()
 	}
