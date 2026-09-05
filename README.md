@@ -58,6 +58,31 @@ podman run --rm -v .:/src:Z -v ./vm/cache/gomod:/go/pkg/mod:Z -w /src \
 ./vm/e2e.sh test2 --offline       # E2E: reset → install → ассерты
 ```
 
+## Развёртывание в изолированном контуре (КИИ)
+
+Бандл самодостаточен: платформа + деплой приложений без единого внешнего запроса.
+
+1. Перенести `bundle/megapolos-bundle.sqfs` (~1G) на целевую машину.
+2. Выполнить:
+   ```bash
+   sudo mount -o ro,loop megapolos-bundle.sqfs /mnt/megapolos-bundle
+   sudo /mnt/megapolos-bundle/installer                 # TUI
+   # или без вопросов:
+   sudo /mnt/megapolos-bundle/installer --no-tui --yes
+   ```
+3. Через ~5 минут: GUI http://<ip>:8080 (TLS :4443), API :5100, токен в
+   `/root/megapolos-token.txt`.
+
+Требования к целевой: **Ubuntu 24.04 amd64**, root, systemd, ≥6G RAM, 20G диска.
+
+После установки:
+- **DNS**: сделать wildcard-запись `*.megapolos.local → <ip>` во внутреннем DNS
+  (или свой домен: `--base-domain`). Без DNS приложения доступны только по IP:порт.
+- **CA**: сертификаты self-signed от Megapolos Root CA — скачать с
+  `http://<ip>:5100/api/ca/download` и импортировать в доверенные на клиентах.
+- **Образы приложений**: базовые (`node:18`, `busybox:1.35`, `nginx`, `registry:2`)
+  уже в бандле — сборка приложений в контуре работает.
+
 ## Структура
 
 - `main.go`, `internal/` — Go-установщик (steps DAG-runner, tview TUI, sys exec)
