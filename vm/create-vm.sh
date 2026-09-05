@@ -27,6 +27,7 @@ mkdir -p "$IMAGES" "$RUN"
 
 declare -A IMG_URL=(
   [ubuntu2404]="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+  [ubuntu2204]="https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"
   [debian12]="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
 )
 
@@ -91,7 +92,10 @@ users:
   - name: megapolos
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
-    lock_passwd: true
+    lock_passwd: false
+    # пароль megapolos — нужен ТОЛЬКО для логина через serial-консоль
+    # (./vm/vm.sh <имя> console); ssh остаётся по ключу (PasswordAuthentication off)
+    passwd: \$6\$N/IB.ows/0O6nGYY\$e4vFZ2o6i62NW7Buu/XlkaAAl1RL9BrjZ5LGr8oJ4fOxZYIUux6DCQTugZ.pxR/jU0pkDZNriNCf4bjSQhSfC1
     ssh_authorized_keys:
       - $PUBKEY
 package_update: false
@@ -118,12 +122,19 @@ write_files:
       GUI_TLS_PORT=$GUI_TLS_PORT
 EOF
 
-if [ "$OFFLINE" -eq 1 ]; then
-  # оффлайн-режим: без default route VM видит только хост (10.0.2.2)
-  cat >> "$SEEDDIR/user-data" <<'EOF'
-runcmd:
-  - ip route del default || true
-EOF
+# runcmd: собираем в один блок (два ключа runcmd в YAML недопустимы)
+RUNCMD=""
+[ "$OFFLINE" -eq 1 ] && RUNCMD="$RUNCMD
+  - ip route del default || true"
+if [ "$DISTRO" = "ubuntu2204" ]; then
+  # jammy: systemd-oomd под нагрузкой (npm/ansible, 4-6G RAM) убивает
+  # systemd-networkd/sshd → вся сеть VM падает. Маскируем — общеизвестная
+  # проблема 22.04, на noble oomd смягчён.
+  RUNCMD="$RUNCMD
+  - systemctl mask --now systemd-oomd || true"
+fi
+if [ -n "$RUNCMD" ]; then
+  printf 'runcmd:%s\n' "$RUNCMD" >> "$SEEDDIR/user-data"
 fi
 genisoimage -quiet -output "$SEEDDIR/seed.iso" -volid cidata -joliet -rock \
   "$SEEDDIR/user-data" "$SEEDDIR/meta-data"
@@ -145,6 +156,7 @@ OVERLAY=$OVERLAY
 SEED=$SEEDDIR/seed.iso
 PIDFILE=$SEEDDIR/qemu.pid
 CONSOLE=$SEEDDIR/console.log
+CONSOCK=$SEEDDIR/console.sock
 EOF
 
 echo

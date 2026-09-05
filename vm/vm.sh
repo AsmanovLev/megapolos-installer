@@ -17,6 +17,7 @@ CONF="$RUN/$NAME/vm.conf"
 [ -f "$CONF" ] || { echo "VM '$NAME' не найдена (создай: ./vm/create-vm.sh $NAME)" >&2; exit 1; }
 # shellcheck disable=SC1090
 . "$CONF"
+CONSOCK="${CONSOCK:-$RUN/$NAME/console.sock}"
 
 is_running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 
@@ -49,7 +50,9 @@ start_vm() {
       -drive "file=$SEED,if=virtio,format=raw,readonly=on" \
       -netdev "tap,id=n0,br=${BRIDGE:-br0},helper=/usr/libexec/qemu-bridge-helper" \
       -device "virtio-net-pci,netdev=n0,mac=$MAC" \
-      -display none -serial "file:$CONSOLE" \
+      -display none \
+      -chardev "socket,id=ser0,path=$CONSOCK,server=on,wait=off,logfile=$CONSOLE" \
+      -serial chardev:ser0 \
       -daemonize -pidfile "$PIDFILE"
     echo "запущена (bridge ${BRIDGE:-br0}, mac $MAC). LAN-IP: ./vm/vm.sh $NAME status"
     return
@@ -63,7 +66,9 @@ start_vm() {
     -drive "file=$SEED,if=virtio,format=raw,readonly=on" \
     -netdev "user,id=n0,$fwds" \
     -device virtio-net-pci,netdev=n0 \
-    -display none -serial "file:$CONSOLE" \
+    -display none \
+      -chardev "socket,id=ser0,path=$CONSOCK,server=on,wait=off,logfile=$CONSOLE" \
+      -serial chardev:ser0 \
     -daemonize -pidfile "$PIDFILE"
   echo "запущена. ssh: ssh -p $SSH_PORT megapolos@localhost  (готовность ~30-60 сек)"
 }
@@ -105,6 +110,10 @@ case "$CMD" in
     else echo "stopped"; fi ;;
   ssh)     shift 2; ssh_vm "$@" ;;
   log)     tail -n 80 -f "$CONSOLE" ;;
+  console)
+    # интерактивная консоль VM (socat → unix socket; выход: Ctrl+O)
+    command -v socat >/dev/null || { echo "нужен socat" >&2; exit 1; }
+    exec socat -,rawer,escape=0x0f "UNIX-CONNECT:$CONSOCK" ;;
   reset)
     stop_vm >/dev/null 2>&1 || true
     rm -f "$OVERLAY"

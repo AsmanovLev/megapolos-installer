@@ -102,7 +102,21 @@ func gql(c *Ctx, w io.Writer, query string, vars map[string]any) (json.RawMessag
 // запускают ansible в фоне и сразу возвращаются. Как install.ts: сначала пауза,
 // чтобы не поймать прошлый 'running', затем polling до ~7.5 мин.
 func waitNodeRunning(c *Ctx, w io.Writer, nodeID, label string) error {
-	time.Sleep(8 * time.Second)
+	// ждём старта ansible (нода уходит в updating); иначе поймаем прошлый 'running'
+	// и ложно решим, что стадия прошла (так маскировался сбой коллекций на jammy)
+	seenUpdating := false
+	for i := 0; i < 20; i++ {
+		data, err := apiQuery(c, c.O.Token, "query($id: String!) { getNode(id: $id) { lifeStatus } }",
+			map[string]any{"id": nodeID})
+		if err == nil && strings.Contains(string(data), `"updating"`) {
+			seenUpdating = true
+			break
+		}
+		time.Sleep(1500 * time.Millisecond)
+	}
+	if !seenUpdating {
+		return fmt.Errorf("%s: ansible не стартовал (нода не ушла в updating)", label)
+	}
 	for i := 0; i < 150; i++ {
 		data, err := apiQuery(c, c.O.Token, "query($id: String!) { getNode(id: $id) { lifeStatus } }",
 			map[string]any{"id": nodeID})
@@ -496,7 +510,7 @@ func bootstrapStep() Step {
 	marker := func(o *Opts) string { return filepath.Join(o.InstallDir, ".megapolos-bootstrap") }
 	return StepFunc{
 		N: "bootstrap",
-		D: []string{"token", "swarm", "docker-images"},
+		D: []string{"token", "swarm", "ansible", "docker-images"},
 		DetectF: func(c *Ctx) (bool, string) {
 			mark := mode(c.O) + "|graphql|localhost"
 			b, err := os.ReadFile(marker(c.O))
@@ -541,6 +555,19 @@ func bootstrapStep() Step {
 				}
 			}
 
+			// платформа помечает ноду running даже при провале ansible-задач
+			// (jammy: pip-таска падала молча) — проверяем артефакты стадий явно
+			if !outOK(c, "docker ps --format '{{.Names}}' | grep -qx nginx") {
+				return fmt.Errorf("INIT: контейнер nginx не поднялся (см. journalctl -u megapolos-core)")
+			}
+			if !sys.FileExists(c, c.Ex, "/data/nginx/conf/core.conf") {
+				return fmt.Errorf("PREPARE FOR CORE: нет /data/nginx/conf/core.conf")
+			}
+			if !sys.FileExists(c, c.Ex, "/data/registry/docker-compose.yml") {
+				return fmt.Errorf("INSTALL REGISTRY: нет /data/registry/docker-compose.yml")
+			}
+			fmt.Fprintln(w, "артефакты стадий на месте (nginx-контейнер, core.conf, registry compose)")
+
 			if c.O.GUIApp {
 				if err := deployGUIApp(c, w, nodeID); err != nil {
 					return err
@@ -552,6 +579,91 @@ func bootstrapStep() Step {
 			}
 			fmt.Fprintf(w, "bootstrap завершён (режим %s)\n", mode(c.O))
 			return nil
+		},
+	}
+}
+
+// ansibleStep: плейбуки платформы требуют ansible-core >= 2.14
+// (community.general.ansible_galaxy_install и др.); jammy тащит ansible 2.10
+// из репо — слишком старый. Ставим ansible-core 2.16 в venv /opt/ansible-venv
+// (оффлайн — wheels из bundle/pip), коллекции community.* — из
+// bundle/ansible-collections или galaxy. Симлинки в /usr/local/bin перекрывают
+// дистрибутивный /usr/bin/ansible* (PATH).
+func ansibleStep() Step {
+	venv := "/opt/ansible-venv"
+	ansibleTooOld := func(c *Ctx) bool {
+		// noble: "ansible [core 2.16.x]"; jammy: "ansible 2.10.8" (legacy)
+		v, err := out(c, "PATH="+venv+"/bin:$PATH ansible --version 2>/dev/null | head -1")
+		if err != nil || v == "" {
+			return true
+		}
+		var major, minor int
+		if strings.Contains(v, "core") {
+			fmt.Sscanf(v[strings.Index(v, "core")+5:], "%d.%d", &major, &minor)
+		} else {
+			fmt.Sscanf(strings.TrimPrefix(v, "ansible "), "%d.%d", &major, &minor)
+		}
+		return major*100+minor < 214
+	}
+	return StepFunc{
+		N: "ansible", D: []string{"packages"},
+		DetectF: func(c *Ctx) (bool, string) {
+			if ansibleTooOld(c) {
+				return false, ""
+			}
+			if outOK(c, "ansible-doc community.general.ansible_galaxy_install >/dev/null 2>&1") {
+				return true, "ansible-core >= 2.14, коллекции на месте"
+			}
+			return false, ""
+		},
+		RunF: func(c *Ctx, w io.Writer) error {
+			if !ansibleTooOld(c) {
+				fmt.Fprintln(w, "ansible достаточно свежий, только коллекции")
+			} else {
+				fmt.Fprintln(w, "дистрибутивный ansible слишком старый — ставлю ansible-core 2.16 в venv")
+				shTolerant(c, w, "apt-get update") // lists могли протухнуть/быть пустыми
+				if err := sh(c, w, aptCmd+" install python3-venv python3-pip"); err != nil {
+					return err
+				}
+				pipArgs := "ansible-core==2.16.14"
+				if c.O.BundleDir != "" && sys.FileExists(c, c.Ex, filepath.Join(c.O.BundleDir, "pip")) {
+					pipArgs = "--no-index --find-links " + filepath.Join(c.O.BundleDir, "pip") + " ansible-core==2.16.14"
+				}
+				if err := sh(c, w, fmt.Sprintf(
+					"python3 -m venv %s && %s/bin/pip install %s", venv, venv, pipArgs)); err != nil {
+					return err
+				}
+				if err := sh(c, w, fmt.Sprintf(
+					"for b in ansible ansible-playbook ansible-galaxy ansible-doc; do ln -sf %s/bin/$b /usr/local/bin/$b; done", venv)); err != nil {
+					return err
+				}
+				// плейбуки платформы делают pip install с --break-system-packages —
+				// jammy pip 22.0.2 флаг не знает. Обновляем системный pip.
+				pipUp := "pip3 install --upgrade pip setuptools wheel"
+				if c.O.BundleDir != "" && sys.FileExists(c, c.Ex, filepath.Join(c.O.BundleDir, "pip")) {
+					pipUp = "pip3 install --no-index --find-links " + filepath.Join(c.O.BundleDir, "pip") + " --upgrade pip setuptools wheel"
+				}
+				if err := sh(c, w, pipUp); err != nil {
+					return err
+				}
+				if err := sh(c, w, "pip3 --version && python3 -m pip install --help | grep -q break-system-packages"); err != nil {
+					return fmt.Errorf("системный pip не обновился (--break-system-packages недоступен): %w", err)
+				}
+			}
+			// коллекции: из бандла (оффлайн) или galaxy (онлайн)
+			bundleCol := filepath.Join(c.O.BundleDir, "ansible-collections")
+			if c.O.BundleDir != "" && sys.FileExists(c, c.Ex, bundleCol) {
+				if err := sh(c, w, "/usr/local/bin/ansible-galaxy collection install "+bundleCol+"/*.tar.gz"); err != nil {
+					return err
+				}
+			} else {
+				if err := sh(c, w, "for i in 1 2 3; do ansible-galaxy collection install community.general:9.5.8 community.docker:4.3.1 community.crypto:2.22.3 && exit 0; sleep 5; done; exit 1"); err != nil {
+					return err
+				}
+			}
+			// venv ansible не видит dist-packages коллекции — но они нам и не нужны,
+			// galaxy ставит в ~/.ansible/collections (root)
+			return sh(c, w, "ansible-doc community.general.ansible_galaxy_install >/dev/null")
 		},
 	}
 }

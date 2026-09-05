@@ -232,9 +232,11 @@ func All(o *Opts) []Step {
 			},
 			RunF: func(c *Ctx, w io.Writer) error {
 				fmt.Fprintf(w, "бандл-режим: dpkg -i %s/debs/*.deb (без сети)\n", c.O.BundleDir)
-				// dpkg ставит ровно те версии, что в бандле (apt лез бы в сеть за новыми)
-				shTolerant(c, w, fmt.Sprintf("dpkg -i %s/debs/*.deb >/dev/null 2>&1", c.O.BundleDir))
-				shTolerant(c, w, aptCmd+" install -f")
+				// openssh-* из бандла конфликтует с версией в cloud-образе →
+				// apt -f СНОСИТ openssh-server (поймано на jammy: сеть VM умирала).
+				// Образ уже несёт рабочий sshd — исключаем. И --no-remove на всякий.
+				shTolerant(c, w, fmt.Sprintf("cd %s/debs && ls *.deb | grep -v '^openssh' | xargs dpkg -i >/dev/null 2>&1", c.O.BundleDir))
+				shTolerant(c, w, aptCmd+" install -f --no-remove")
 				return nil
 			},
 		},
@@ -301,6 +303,7 @@ func All(o *Opts) []Step {
 			},
 		},
 		packagesStep(),
+		ansibleStep(),
 		userStep(),
 		swarmStep(),
 		dockerImagesStep(),
@@ -428,7 +431,7 @@ func packagesStep() Step {
 				}
 			}
 			// python-зависимости для ansible-модулей платформы (docker, htpasswd, crypto)
-			if err := sh(c, w, aptCmd+" install python3-docker python3-passlib python3-cryptography python3-jsondiff"); err != nil {
+			if err := sh(c, w, aptCmd+" install python3-docker python3-passlib python3-cryptography python3-jsondiff python3-venv python3-pip"); err != nil {
 				return err
 			}
 			return sh(c, w, "systemctl enable --now docker")
