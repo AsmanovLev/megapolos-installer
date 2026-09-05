@@ -17,3 +17,4 @@
 /vm/run/
 /vm/cache/*
 !/vm/cache/verdaccio.yml
+/bundle/docker/
