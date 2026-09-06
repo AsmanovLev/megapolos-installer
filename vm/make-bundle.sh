@@ -99,7 +99,8 @@ done
 
 echo "== дамп БД и установщики"
 cp "$SRC_WS/megapolos-core/install/newpostgresql.sql" "$BUNDLE/pg/"
-cp "$WORKSPACE/install/megapolos-install.sh" "$BUNDLE/install.sh"
+# входная точка бандла = умный bootstrap (оффлайн-first: без сети при запуске из смонтированного бандла)
+cp "$WORKSPACE/install/bootstrap.sh" "$BUNDLE/install.sh"
 chmod +x "$BUNDLE/install.sh"
 # Go-установщик (основной); собирается в контейнере golang
 if [ ! -x "$WORKSPACE/megapolos-installer" ]; then

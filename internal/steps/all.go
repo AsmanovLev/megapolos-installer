@@ -88,6 +88,16 @@ func npmOffline(c *Ctx) string {
 	return ""
 }
 
+// aptUpdate — apt-get update, толерантный к оффлайну: в бандл-режиме сети
+// может не быть вообще (КИИ) → короткие таймауты, чтобы не висеть по 120с.
+func aptUpdate(c *Ctx, w io.Writer) {
+	cmd := "apt-get update"
+	if c.O.BundleDir != "" {
+		cmd = "apt-get -o Acquire::http::Timeout=5 -o Acquire::https::Timeout=5 -o Acquire::Retries=0 update"
+	}
+	shTolerant(c, w, cmd)
+}
+
 // needSwap — RAM < 8G → swap нужен (vite build ест до 3G heap).
 func needSwap(c *Ctx) bool {
 	out, err := c.Ex.Output(c, sys.RunOpts{Cmd: "awk '/MemTotal/ {print $2}' /proc/meminfo"})
@@ -260,9 +270,9 @@ func All(o *Opts) []Step {
 						return err
 					}
 					fmt.Fprintf(w, "apt через кэш %s\n", c.O.AptProxy)
-				}
-				shTolerant(c, w, "apt-get update")
-				pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl"
+			}
+			aptUpdate(c, w)
+			pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl"
 				if c.O.GUI && !c.O.GUIApp {
 					pkgs += " nginx" // nginx только для static GUI (app-режим: nginx-контейнер ноды)
 				}
@@ -414,7 +424,7 @@ func packagesStep() Step {
 				if err := sh(c, w, `echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list`); err != nil {
 					return err
 				}
-				shTolerant(c, w, "apt-get update")
+				aptUpdate(c, w)
 				if err := sh(c, w, aptCmd+" install "+pgPkg); err != nil {
 					return err
 				}
