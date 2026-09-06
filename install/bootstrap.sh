@@ -19,7 +19,7 @@ set -euo pipefail
 
 [ "$(id -u)" -eq 0 ] || { echo "Запусти от root: sudo bash install.sh" >&2; exit 1; }
 
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}" 2>/dev/null && pwd || echo /nonexistent)"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo /nonexistent)"
 MNT=/mnt/megapolos-bundle
 
 run_from() { # $1 = каталог бандла
