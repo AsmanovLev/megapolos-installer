@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
@@ -47,6 +48,30 @@ func defaultApp() *tview.Application {
 	screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock) // заметный курсор в полях ввода (как в opencode)
 	screenFini = func() { screen.Fini() }
 	return tview.NewApplication().SetScreen(screen)
+}
+
+// probeURL — жив ли HTTP-endpoint (2с таймаут). Для автоопределения зеркала.
+func probeURL(url string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return true
+}
+
+// hostMirrorLabel — подпись пункта зеркала (только если хост известен из vm.env).
+func hostMirrorLabel(hostIP string) string {
+	if hostIP == "" {
+		return " (не обнаружено)"
+	}
+	return " http://" + hostIP + ":8000"
 }
 
 // setTheme — классическая curses-палитра (whiptail / debian-installer):
@@ -93,16 +118,29 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	pages := tview.NewPages()
 
 	// ---------------- визард ----------------
-	localLabel := "локальное зеркало http://" + o.HostIP + ":8000"
-	gitlabLabel := "gitlab.com https://gitlab.com/megapolos"
-	srcIdx := 1
-	if strings.HasPrefix(o.GitBase, "http://"+o.HostIP) {
-		srcIdx = 0
+	// источник: пункты по фактическому наличию (без хардкода хоста)
+	var srcLabels []string
+	var srcChoices []string // bundle | gitlab | local | custom
+	if o.BundleDir != "" {
+		srcLabels = append(srcLabels, "бандл (найден: "+o.BundleDir+")")
+		srcChoices = append(srcChoices, "bundle")
+	}
+	srcLabels = append(srcLabels, "официальная репа gitlab.com/megapolos", "зеркало хоста"+hostMirrorLabel(o.HostIP), "свой URL/путь")
+	srcChoices = append(srcChoices, "gitlab", "local", "custom")
+	srcIdx := 0
+	for i, ch := range srcChoices {
+		if (ch == "bundle" && o.SrcKind == steps.SrcBundle) ||
+			(ch == "local" && o.SrcKind == steps.SrcMirror) ||
+			(ch == "gitlab" && o.SrcKind == steps.SrcGitlab) {
+			srcIdx = i
+			break
+		}
 	}
 
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(" Megapolos — установка ")
-	form.AddDropDown("Источник репозиториев", []string{localLabel, gitlabLabel}, srcIdx, nil)
+	form.AddDropDown("Источник", srcLabels, srcIdx, nil)
+	form.AddInputField("URL/путь (для «свой»)", "", 40, nil, func(s string) { o.SourceCustom = strings.TrimSpace(s) })
 	form.AddInputField("core ref (ветка/тег/sha)", o.CoreRef, 40, nil, func(s string) { o.CoreRef = strings.TrimSpace(s) })
 	form.AddInputField("gui ref (ветка/тег/sha)", o.GUIRef, 40, nil, func(s string) { o.GUIRef = strings.TrimSpace(s) })
 	form.AddInputField("API URL для GUI", o.APIURL, 40, nil, func(s string) { o.APIURL = strings.TrimSpace(s) })
@@ -132,12 +170,25 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddCheckbox("Bootstrap ноды (нода + INIT + registry + DBMS через API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
 	form.AddPasswordField("Пароль root для ноды", o.NodeRootPassword, 40, '*', func(s string) { o.NodeRootPassword = s })
 	form.AddButton("Начать установку", func() {
-		idx, _ := form.GetFormItemByLabel("Источник репозиториев").(*tview.DropDown).GetCurrentOption()
-		if idx == 0 {
-			o.GitBase = "http://" + o.HostIP + ":8000"
-		} else {
-			o.GitBase = "https://gitlab.com/megapolos"
+		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
+		choice := "gitlab"
+		if idx >= 0 && idx < len(srcChoices) {
+			choice = srcChoices[idx]
 		}
+		if choice == "custom" && o.SourceCustom == "" {
+			runErr = fmt.Errorf("выбран «свой URL/путь», но поле пустое")
+			app.Stop()
+			return
+		}
+		src, err := steps.ResolveSource(choice, o.SourceCustom, o.BundleDir, o.HostIP, func(u string) bool {
+			return probeURL(u)
+		})
+		if err != nil {
+			runErr = err
+			app.Stop()
+			return
+		}
+		o.GitBase, o.SrcKind, o.SrcHuman = src.Base, src.Kind, src.Human
 		gi, _ := form.GetFormItemByLabel("GUI").(*tview.DropDown).GetCurrentOption()
 		o.GUI, o.GUIApp = gi != 2, gi == 1
 		if o.GUIApp && o.GUIDomain == "" {
@@ -666,6 +717,9 @@ func showSummary(app *tview.Application, pages *tview.Pages, o *steps.Opts, logP
 	sb.WriteString(" (также в /root/megapolos-token.txt)\n")
 	if o.BaseDomain != "" {
 		fmt.Fprintf(&sb, "\n Базовый домен:           [yellow]%s[-]\n DNS:                     *.%s → %s (или /etc/hosts)\n", o.BaseDomain, o.BaseDomain, ip)
+	}
+	if o.SrcHuman != "" {
+		fmt.Fprintf(&sb, "\n Источник кода:           [yellow]%s[-] (core@%s, gui@%s)\n", o.SrcHuman, o.CoreRef, o.GUIRef)
 	}
 	fmt.Fprintf(&sb, "\n Лог установки:           %s   (c — копия в буфер)\n\n [gray]q / Esc — выход[-]", logPath)
 

@@ -59,18 +59,21 @@ type Opts struct {
 	NpmRegistry      string // пусто = дефолтный npmjs
 	AddSelfNode      bool
 	NodeRootPassword string
-	BaseDomain       string // базовый домен инстансов (megapolos.local); пусто = не создавать
-	GUI              bool   // ставить и обслуживать GUI (static — nginx :80, или app — платформа)
-	GUIApp           bool   // GUI как приложение платформы (install.ts), а не статический nginx
-	GUIDomain        string // домен GUI-приложения (app-режим; дефолт gui.<BaseDomain>)
-	GUITLS           bool   // HTTPS для GUI (серт Megapolos Root CA, :443)
-	LANIP            string // внешний IPv4 машины (для дефолтов и сводки)
-	VMGUIPort        string // hostfwd-порт GUI (QEMU, из /etc/megapolos-vm.env)
-	VMGUITLSPort     string // hostfwd-порт GUI HTTPS
-	VMAPIPort        string // hostfwd-порт API
-	Swap             string // auto|force|skip: auto = создавать только при RAM < 8G
+	BaseDomain       string     // базовый домен инстансов (megapolos.local); пусто = не создавать
+	SrcKind          SourceKind // разрешённый источник (ResolveSource)
+	SrcHuman         string     // человекочитаемый вердикт источника
+	GUI              bool       // ставить и обслуживать GUI (static — nginx :80, или app — платформа)
+	GUIApp           bool       // GUI как приложение платформы (install.ts), а не статический nginx
+	GUIDomain        string     // домен GUI-приложения (app-режим; дефолт gui.<BaseDomain>)
+	GUITLS           bool       // HTTPS для GUI (серт Megapolos Root CA, :443)
+	LANIP            string     // внешний IPv4 машины (для дефолтов и сводки)
+	VMGUIPort        string     // hostfwd-порт GUI (QEMU, из /etc/megapolos-vm.env)
+	VMGUITLSPort     string     // hostfwd-порт GUI HTTPS
+	VMAPIPort        string     // hostfwd-порт API
+	Swap             string     // auto|force|skip: auto = создавать только при RAM < 8G
 	SvcUser          string
 	HostIP           string
+	SourceCustom     string // URL/путь при выборе «свой» в TUI
 	Hostname         string
 	Token            string // заполняется шагом token
 	NodeMajor        int

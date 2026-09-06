@@ -62,20 +62,6 @@ func writeFile(c *Ctx, w io.Writer, path, content string, perm os.FileMode, owne
 	return nil
 }
 
-// srcURL — откуда клонировать репозиторий.
-func srcURL(c *Ctx, repo string) string {
-	if c.O.BundleDir != "" {
-		p := filepath.Join(c.O.BundleDir, "repos", repo+".git")
-		if sys.FileExists(c, c.Ex, p) {
-			return p
-		}
-	}
-	if strings.HasPrefix(c.O.GitBase, "http://"+c.O.HostIP) {
-		return c.O.GitBase + "/" + repo + "/.git" // dumb-http зеркало
-	}
-	return c.O.GitBase + "/" + repo + ".git"
-}
-
 // npmOffline — флаг --offline для npm, если бандл с кэшем.
 func npmOffline(c *Ctx) string {
 	if c.O.BundleDir == "" {
@@ -270,9 +256,9 @@ func All(o *Opts) []Step {
 						return err
 					}
 					fmt.Fprintf(w, "apt через кэш %s\n", c.O.AptProxy)
-			}
-			aptUpdate(c, w)
-			pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl"
+				}
+				aptUpdate(c, w)
+				pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl"
 				if c.O.GUI && !c.O.GUIApp {
 					pkgs += " nginx" // nginx только для static GUI (app-режим: nginx-контейнер ноды)
 				}

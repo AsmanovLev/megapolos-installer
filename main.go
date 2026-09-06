@@ -133,29 +133,30 @@ func existingConfig(coreDir string) (secret, dbPass string) {
 
 func main() {
 	var (
-		coreRef     = flag.String("core-ref", envOr("MEGAPOLOS_CORE_REF", "main"), "ветка/тег/sha megapolos-core")
-		guiRef      = flag.String("gui-ref", envOr("MEGAPOLOS_GUI_REF", "main"), "ветка/тег/sha megapolos-gui")
-		source      = flag.String("source", envOr("MEGAPOLOS_GIT_BASE", "auto"), "auto | local | gitlab | базовый URL репозиториев")
-		apiURL      = flag.String("api-url", envOr("MEGAPOLOS_API_URL", ""), "URL API для GUI (пусто = http://<lan-ip>:5100)")
-		guiOn       = flag.Bool("gui", envOr("MEGAPOLOS_GUI", "true") != "false", "ставить GUI на эту машину (nginx :8080)")
-		guiApp      = flag.Bool("gui-app", envOr("MEGAPOLOS_GUI_APP", "false") == "true", "GUI как приложение платформы (домен+серты), а не статический nginx")
-		guiDomain   = flag.String("gui-domain", envOr("MEGAPOLOS_GUI_DOMAIN", ""), "домен GUI-приложения (пусто = gui.<base-domain>)")
-		guiTLS      = flag.Bool("gui-tls", envOr("MEGAPOLOS_GUI_TLS", "true") != "false", "HTTPS для GUI (серт Megapolos Root CA, :4443)")
-		devMode     = flag.Bool("dev-mode", envBool("MEGAPOLOS_DEV_MODE", true), "devMode (все контейнеры на localhost)")
-		debug       = flag.Bool("debug", envBool("MEGAPOLOS_DEBUG", false), "debug-логи ядра")
-		dbName      = flag.String("db-name", envOr("MEGAPOLOS_DB_NAME", "megapolos"), "имя БД")
-		dbUser      = flag.String("db-user", envOr("MEGAPOLOS_DB_USER", "megapolos"), "пользователь БД")
-		dir         = flag.String("dir", envOr("MEGAPOLOS_DIR", "/opt/megapolos"), "каталог установки")
-		bundle      = flag.String("bundle", envOr("MEGAPOLOS_BUNDLE_DIR", ""), "каталог оффлайн-бандла (пусто = автопоиск)")
-		selfNode    = flag.String("self-node", envOr("MEGAPOLOS_ADD_SELF_NODE", "auto"), "true/false/auto: добавить этот хост как ноду")
-		nodePass    = flag.String("node-root-password", envOr("MEGAPOLOS_NODE_ROOT_PASSWORD", "megapolos"), "пароль root для SSH себя-ноды")
-		baseDomain  = flag.String("base-domain", envOr("MEGAPOLOS_BASE_DOMAIN", "megapolos.local"), "базовый домен инстансов (пусто = не создавать)")
-		swapMode    = flag.String("swap", envOr("MEGAPOLOS_SWAP", "auto"), "swap: auto (только при RAM<8G) | force | skip")
-		jobs        = flag.Int("jobs", 2, "максимум параллельных шагов (1 = строго последовательно)")
-		yes         = flag.Bool("yes", false, "принять все значения по умолчанию")
-		noTUI       = flag.Bool("no-tui", false, "без TUI (текстовый вывод)")
-		hostIP      = flag.String("host-ip", envOr("MEGAPOLOS_HOST_IP", ""), "IP хоста с кэшами/зеркалом (пусто = vm.env HOST_IP, иначе 10.0.2.2)")
-		showVersion = flag.Bool("version", false, "версия и выход")
+		coreRef      = flag.String("core-ref", envOr("MEGAPOLOS_CORE_REF", "main"), "ветка/тег/sha megapolos-core")
+		guiRef       = flag.String("gui-ref", envOr("MEGAPOLOS_GUI_REF", "main"), "ветка/тег/sha megapolos-gui")
+		source       = flag.String("source", envOr("MEGAPOLOS_SOURCE", "auto"), "bundle | gitlab | local | auto | <URL или путь к репо>")
+		sourceCustom = flag.String("source-custom", envOr("MEGAPOLOS_SOURCE_CUSTOM", ""), "URL/путь источника при --source custom (или впиши прямо в --source)")
+		apiURL       = flag.String("api-url", envOr("MEGAPOLOS_API_URL", ""), "URL API для GUI (пусто = http://<lan-ip>:5100)")
+		guiOn        = flag.Bool("gui", envOr("MEGAPOLOS_GUI", "true") != "false", "ставить GUI на эту машину (nginx :8080)")
+		guiApp       = flag.Bool("gui-app", envOr("MEGAPOLOS_GUI_APP", "false") == "true", "GUI как приложение платформы (домен+серты), а не статический nginx")
+		guiDomain    = flag.String("gui-domain", envOr("MEGAPOLOS_GUI_DOMAIN", ""), "домен GUI-приложения (пусто = gui.<base-domain>)")
+		guiTLS       = flag.Bool("gui-tls", envOr("MEGAPOLOS_GUI_TLS", "true") != "false", "HTTPS для GUI (серт Megapolos Root CA, :4443)")
+		devMode      = flag.Bool("dev-mode", envBool("MEGAPOLOS_DEV_MODE", true), "devMode (все контейнеры на localhost)")
+		debug        = flag.Bool("debug", envBool("MEGAPOLOS_DEBUG", false), "debug-логи ядра")
+		dbName       = flag.String("db-name", envOr("MEGAPOLOS_DB_NAME", "megapolos"), "имя БД")
+		dbUser       = flag.String("db-user", envOr("MEGAPOLOS_DB_USER", "megapolos"), "пользователь БД")
+		dir          = flag.String("dir", envOr("MEGAPOLOS_DIR", "/opt/megapolos"), "каталог установки")
+		bundle       = flag.String("bundle", envOr("MEGAPOLOS_BUNDLE_DIR", ""), "каталог оффлайн-бандла (пусто = автопоиск)")
+		selfNode     = flag.String("self-node", envOr("MEGAPOLOS_ADD_SELF_NODE", "auto"), "true/false/auto: добавить этот хост как ноду")
+		nodePass     = flag.String("node-root-password", envOr("MEGAPOLOS_NODE_ROOT_PASSWORD", "megapolos"), "пароль root для SSH себя-ноды")
+		baseDomain   = flag.String("base-domain", envOr("MEGAPOLOS_BASE_DOMAIN", "megapolos.local"), "базовый домен инстансов (пусто = не создавать)")
+		swapMode     = flag.String("swap", envOr("MEGAPOLOS_SWAP", "auto"), "swap: auto (только при RAM<8G) | force | skip")
+		jobs         = flag.Int("jobs", 2, "максимум параллельных шагов (1 = строго последовательно)")
+		yes          = flag.Bool("yes", false, "принять все значения по умолчанию")
+		noTUI        = flag.Bool("no-tui", false, "без TUI (текстовый вывод)")
+		hostIP       = flag.String("host-ip", envOr("MEGAPOLOS_HOST_IP", ""), "IP хоста с кэшами/зеркалом (пусто = vm.env HOST_IP, иначе 10.0.2.2)")
+		showVersion  = flag.Bool("version", false, "версия и выход")
 	)
 	flag.Parse()
 
@@ -190,37 +191,30 @@ func main() {
 
 	// --- автодетект кэшей хоста ---
 	// bridge-VM: хост доступен по LAN-IP (записан в vm.env при create-vm.sh);
-	// user-net (slirp): 10.0.2.2
+	// user-net (slirp): 10.0.2.2 из vm.env. БЕЗ vm.env/флага зеркала нет —
+	// на целевой машине вне стенда это норма (bundle/gitlab).
 	vmEnv := readVMEnv("/etc/megapolos-vm.env")
 	hostIPVal := *hostIP
 	if hostIPVal == "" {
-		hostIPVal = vmEnv["HOST_IP"]
-	}
-	if hostIPVal == "" {
-		hostIPVal = "10.0.2.2"
+		hostIPVal = vmEnv["HOST_IP"] // пусто = зеркала нет (КИИ-сценарий)
 	}
 	aptProxy, npmRegistry := "", ""
-	if probe("http://" + hostIPVal + ":3142") {
-		aptProxy = "http://" + hostIPVal + ":3142"
-	}
-	if probe("http://" + hostIPVal + ":4873") {
-		npmRegistry = "http://" + hostIPVal + ":4873"
+	if hostIPVal != "" {
+		if probe("http://" + hostIPVal + ":3142") {
+			aptProxy = "http://" + hostIPVal + ":3142"
+		}
+		if probe("http://" + hostIPVal + ":4873") {
+			npmRegistry = "http://" + hostIPVal + ":4873"
+		}
 	}
 
-	// --- источник репозиториев ---
-	gitBase := *source
-	switch gitBase {
-	case "auto":
-		if probe("http://" + hostIPVal + ":8000/") {
-			gitBase = "http://" + hostIPVal + ":8000"
-		} else {
-			gitBase = "https://gitlab.com/megapolos"
-		}
-	case "local":
-		gitBase = "http://" + hostIPVal + ":8000"
-	case "gitlab":
-		gitBase = "https://gitlab.com/megapolos"
+	// --- источник репозиториев: bundle | gitlab | local | auto | <url|path> ---
+	src, srcErr := steps.ResolveSource(*source, *sourceCustom, bundleDir, hostIPVal, probe)
+	if srcErr != nil {
+		fmt.Fprintln(os.Stderr, "FAIL: "+srcErr.Error())
+		os.Exit(1)
 	}
+	gitBase := src.Base
 
 	hostname, _ := os.Hostname()
 	lanIP := detectLANIP()
@@ -275,6 +269,8 @@ func main() {
 		Swap:             *swapMode,
 		SvcUser:          "megapolos",
 		HostIP:           hostIPVal,
+		SrcKind:          src.Kind,
+		SrcHuman:         src.Human,
 		Hostname:         hostname,
 		NodeMajor:        18,
 		PgMajor:          16,
@@ -324,7 +320,7 @@ func main() {
 	if npmRegistry != "" {
 		fmt.Println("==> npm-зеркало:", npmRegistry)
 	}
-	fmt.Printf("==> источник: %s (core@%s, gui@%s), jobs=%d\n", gitBase, opts.CoreRef, opts.GUIRef, *jobs)
+	fmt.Printf("==> источник: %s [%s] (core@%s, gui@%s), jobs=%d\n", opts.SrcHuman, gitBase, opts.CoreRef, opts.GUIRef, *jobs)
 
 	ui := steps.NewHeadlessUI()
 	r := &steps.Runner{
