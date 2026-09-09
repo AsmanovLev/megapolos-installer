@@ -154,7 +154,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	}
 	form.AddDropDown("GUI", guiModes, guiIdx, nil)
 	form.AddInputField("Домен GUI (app-режим)", o.GUIDomain, 0, nil, func(s string) { o.GUIDomain = strings.TrimSpace(s) })
-	form.AddCheckbox("HTTPS для GUI (серт Megapolos CA, :4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
+	form.AddCheckbox("HTTPS для GUI (:4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
 	swapInitial := o.Swap == "force" || ((o.Swap == "" || o.Swap == "auto") && localNeedSwap())
@@ -168,7 +168,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddInputField("Базовый домен", o.BaseDomain, 0, nil, func(s string) { o.BaseDomain = strings.TrimSpace(s) })
 	form.AddInputField("Имя БД", o.DBName, 0, nil, func(s string) { o.DBName = strings.TrimSpace(s) })
 	form.AddInputField("Пользователь БД", o.DBUser, 0, nil, func(s string) { o.DBUser = strings.TrimSpace(s) })
-	form.AddCheckbox("Bootstrap ноды (нода + INIT + registry + DBMS через API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
+	form.AddCheckbox("Bootstrap ноды (API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
 	form.AddPasswordField("Пароль root для ноды", o.NodeRootPassword, 0, '*', func(s string) { o.NodeRootPassword = s })
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
@@ -273,15 +273,17 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 		return action, ev
 	})
 
-	// синий backdrop + центрированный «диалог» — классический вид curses-установщика
-	// (ширина/высота пропорциональные — адаптируется к размеру терминала)
+	// синий backdrop + центрированный «диалог» — классический вид curses-установщика.
+	// ВАЖНО: фиксированная ширина 64 — при width=0 (auto) InputField'ы этой
+	// версии tview считают ширину от формы на весь экран и текст улетает
+	// за правую рамку диалога (поймано дампом на 80 колонках).
 	backdrop := tview.NewBox().SetBackgroundColor(tcell.ColorNavy)
 	dialog := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(nil, 0, 1, false).
 			AddItem(form, 0, 5, true).
-			AddItem(nil, 0, 1, false), 0, 4, true).
+			AddItem(nil, 0, 1, false), 64, 0, true).
 		AddItem(nil, 0, 1, false)
 
 	pages.AddPage("backdrop", backdrop, true, true)

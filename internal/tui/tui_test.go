@@ -137,3 +137,63 @@ func TestInputFieldShowsCursor(t *testing.T) {
 	_, _, vis := screen.GetCursor()
 	t.Fatalf("курсор не виден при фокусе на InputField (vis=%v)", vis)
 }
+
+// TestWizardNarrowTerm: при 80 колонках форма не должна рисовать текст
+// за границами экрана (регрессия «поля выпирают»: раньше fieldWidth был
+// фиксированные 40 и рвался на узких терминалах).
+func TestWizardNarrowTerm(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(80, 24)
+	orig := newApp
+	newApp = func() *tview.Application {
+		return tview.NewApplication().SetScreen(screen)
+	}
+	t.Cleanup(func() { newApp = orig })
+
+	o := &steps.Opts{
+		HostIP: "10.0.2.2", CoreRef: "main", GUIRef: "main",
+		APIURL: "http://localhost:5100", DevMode: true,
+		DBName: "megapolos", DBUser: "megapolos", BaseDomain: "megapolos.local",
+		AddSelfNode: true, NodeRootPassword: "megapolos",
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(o, 2) }()
+	defer func() {
+		screen.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		txt := screenText(&screen)
+		if strings.Contains(txt, "core ref") { // отрисовался
+			// регрессия «выпирания»: текст полей рисовался ПОВЕРХ рамки и за ней.
+			// ОК: на колонках 0 и w-1 только рамочные символы или пробелы.
+			w, h := screen.Size()
+			frame := func(r rune) bool {
+				return r == ' ' || strings.ContainsRune("┌─┐│└┘├┤┬┴┼", r)
+			}
+			for y := 0; y < h; y++ {
+				l, _, _, _ := screen.GetContent(0, y)
+				r, _, _, _ := screen.GetContent(w-1, y)
+				if !frame(l) || !frame(r) {
+					line := ""
+					for x := 0; x < w; x++ {
+						rr, _, _, _ := screen.GetContent(x, y)
+						line += string(rr)
+					}
+					t.Fatalf("текст вне рамки на строке %d (выпирание):\n%q", y, line)
+				}
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("визард не отрисовался за 5с")
+}
