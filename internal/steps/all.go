@@ -181,15 +181,17 @@ func cloneOrPull(repo, ref string) func(*Ctx, io.Writer) error {
 			return err
 		}
 		url := srcURL(c, repo)
-		if c.O.BundleDir != "" && !strings.Contains(url, "://") {
-			// sqfs из контейнерной сборки имеет владельца root:root, а клонируем
-			// под megapolos → git safe.directory (git>=2.35 «dubious ownership»)
-			for _, p := range []string{url, url + "/.git"} {
+		// safe.directory для ВСЕХ участников git-операций (svc-юзер):
+		// источник (sqfs/кастом-путь = root:root), целевой репо (root-сервис
+		// пишет в worktree) — иначе git>=2.35 «dubious ownership» (exit 128)
+		for _, p := range []string{url, url + "/.git", dir, dir + "/.git"} {
+			if !strings.Contains(p, "://") {
 				shTolerant(c, w, fmt.Sprintf("sudo -u %s git config --global --add safe.directory %s", c.O.SvcUser, p))
 			}
 		}
 		if sys.FileExists(c, c.Ex, filepath.Join(dir, ".git")) {
-			shTolerant(c, w, "") // noop для читаемости лога
+			// если репо когда-то трогал root — вернуть владельца (иначе git/npm под svc ломаются)
+			shTolerant(c, w, fmt.Sprintf("[ \"$(stat -c %%U %s)\" != %s ] && chown -R %s:%s %s || true", dir, c.O.SvcUser, c.O.SvcUser, c.O.SvcUser, dir))
 			if err := asSvc(c, w, fmt.Sprintf("cd %s && git fetch --all --tags --prune", dir)); err != nil {
 				fmt.Fprintf(w, "WARN: git fetch: %v (оффлайн? продолжаю на локальной копии)\n", err)
 			}

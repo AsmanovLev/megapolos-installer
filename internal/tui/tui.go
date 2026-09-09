@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -45,7 +46,7 @@ func defaultApp() *tview.Application {
 	if err != nil {
 		panic(err)
 	}
-	screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock) // заметный курсор в полях ввода (как в opencode)
+	screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock, tcell.ColorWhite, tcell.ColorBlack) // заметный курсор в полях ввода (как в opencode)
 	screenFini = func() { screen.Fini() }
 	return tview.NewApplication().SetScreen(screen)
 }
@@ -140,10 +141,10 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(" Megapolos — установка ")
 	form.AddDropDown("Источник", srcLabels, srcIdx, nil)
-	form.AddInputField("URL/путь (для «свой»)", "", 40, nil, func(s string) { o.SourceCustom = strings.TrimSpace(s) })
-	form.AddInputField("core ref (ветка/тег/sha)", o.CoreRef, 40, nil, func(s string) { o.CoreRef = strings.TrimSpace(s) })
-	form.AddInputField("gui ref (ветка/тег/sha)", o.GUIRef, 40, nil, func(s string) { o.GUIRef = strings.TrimSpace(s) })
-	form.AddInputField("API URL для GUI", o.APIURL, 40, nil, func(s string) { o.APIURL = strings.TrimSpace(s) })
+	form.AddInputField("URL/путь (для «свой»)", "", 0, nil, func(s string) { o.SourceCustom = strings.TrimSpace(s) })
+	form.AddInputField("core ref (ветка/тег/sha)", o.CoreRef, 0, nil, func(s string) { o.CoreRef = strings.TrimSpace(s) })
+	form.AddInputField("gui ref (ветка/тег/sha)", o.GUIRef, 0, nil, func(s string) { o.GUIRef = strings.TrimSpace(s) })
+	form.AddInputField("API URL для GUI", o.APIURL, 0, nil, func(s string) { o.APIURL = strings.TrimSpace(s) })
 	guiModes := []string{"static: nginx на этой машине (быстро, оффлайн)", "app: приложение платформы с доменом и сертами (онлайн)", "none: без GUI"}
 	guiIdx := 0
 	if o.GUIApp {
@@ -152,7 +153,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 		guiIdx = 2
 	}
 	form.AddDropDown("GUI", guiModes, guiIdx, nil)
-	form.AddInputField("Домен GUI (app-режим)", o.GUIDomain, 40, nil, func(s string) { o.GUIDomain = strings.TrimSpace(s) })
+	form.AddInputField("Домен GUI (app-режим)", o.GUIDomain, 0, nil, func(s string) { o.GUIDomain = strings.TrimSpace(s) })
 	form.AddCheckbox("HTTPS для GUI (серт Megapolos CA, :4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
@@ -164,11 +165,11 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 			o.Swap = "skip"
 		}
 	})
-	form.AddInputField("Базовый домен", o.BaseDomain, 40, nil, func(s string) { o.BaseDomain = strings.TrimSpace(s) })
-	form.AddInputField("Имя БД", o.DBName, 40, nil, func(s string) { o.DBName = strings.TrimSpace(s) })
-	form.AddInputField("Пользователь БД", o.DBUser, 40, nil, func(s string) { o.DBUser = strings.TrimSpace(s) })
+	form.AddInputField("Базовый домен", o.BaseDomain, 0, nil, func(s string) { o.BaseDomain = strings.TrimSpace(s) })
+	form.AddInputField("Имя БД", o.DBName, 0, nil, func(s string) { o.DBName = strings.TrimSpace(s) })
+	form.AddInputField("Пользователь БД", o.DBUser, 0, nil, func(s string) { o.DBUser = strings.TrimSpace(s) })
 	form.AddCheckbox("Bootstrap ноды (нода + INIT + registry + DBMS через API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
-	form.AddPasswordField("Пароль root для ноды", o.NodeRootPassword, 40, '*', func(s string) { o.NodeRootPassword = s })
+	form.AddPasswordField("Пароль root для ноды", o.NodeRootPassword, 0, '*', func(s string) { o.NodeRootPassword = s })
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
 		choice := "gitlab"
@@ -290,7 +291,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	// КАЖДОЙ отрисовки (InputField рисует курсор через встроенную TextArea,
 	// но со стилем по умолчанию он тонкий и теряется на красном фоне).
 	app.SetAfterDrawFunc(func(screen tcell.Screen) {
-		screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock)
+		screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock, tcell.ColorWhite, tcell.ColorBlack)
 	})
 
 	if err := app.SetRoot(pages, true).EnableMouse(true).Run(); err != nil && runErr == nil {
@@ -362,10 +363,41 @@ type pane struct {
 	name    string // текущий шаг (для префикса в лог-файле)
 	logFile *os.File
 
+	userScrolled atomic.Bool  // пользователь отмотал вверх — не дёргаем ScrollToEnd
+	lineCount    atomic.Int64 // число строк, залитых в tv (для «досмотрели до низа»)
+
 	mu      sync.Mutex
 	pending []byte
 	line    []byte // недописанная строка (ждём \n)
 	size    int    // оценка размера содержимого tv
+}
+
+// wheelHandler — прокрутка колеса по 1 строке за тик и «липкий» низ
+// (возврат автопрокрутки при достижении конца).
+func wheelHandler(tv *tview.TextView, pane *pane) func(action tview.MouseAction, ev *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+	return func(action tview.MouseAction, ev *tcell.EventMouse) (tview.MouseAction, *tcell.EventMouse) {
+		if action != tview.MouseScrollUp && action != tview.MouseScrollDown {
+			return action, ev
+		}
+		row, _ := tv.GetScrollOffset()
+		if action == tview.MouseScrollUp {
+			if row > 0 {
+				tv.ScrollTo(row-1, 0)
+				pane.userScrolled.Store(true)
+			}
+		} else {
+			total := pane.lineCount.Load()
+			_, _, _, h := tv.GetInnerRect()
+			newRow := row + 1
+			if int64(newRow) >= total-int64(h) { // досмотрели до низа — вернуть автопрокрутку
+				pane.userScrolled.Store(false)
+				tv.ScrollToEnd()
+				return tview.MouseConsumed, ev
+			}
+			tv.ScrollTo(newRow, 0)
+		}
+		return tview.MouseConsumed, ev
+	}
 }
 
 const paneCap = 512 * 1024
@@ -414,7 +446,11 @@ func (p *pane) flush() {
 		p.mu.Unlock()
 	}
 	fmt.Fprint(p.tv, string(data))
-	p.tv.ScrollToEnd()
+	p.lineCount.Add(int64(bytes.Count(data, []byte("\n"))))
+	// «липкий» низ: автопрокрутка только если пользователь не отмотал вверх.
+	if !p.userScrolled.Load() {
+		p.tv.ScrollToEnd()
+	}
 }
 
 func (p *pane) reset(step string) {
@@ -424,6 +460,8 @@ func (p *pane) reset(step string) {
 	p.line = nil
 	p.size = 0
 	p.mu.Unlock()
+	p.lineCount.Store(0)
+	p.userScrolled.Store(false)
 	p.tv.Clear()
 	p.tv.SetTitle(" [yellow]●[-] " + step + " ")
 }
@@ -534,9 +572,11 @@ func startRun(app *tview.Application, pages *tview.Pages, o *steps.Opts, jobs in
 	pane0 := &pane{tv: tview.NewTextView().SetWrap(true).SetScrollable(true), logFile: logFile}
 	pane0.tv.SetBorder(true)
 	styleDark(pane0.tv, " — ")
+	pane0.tv.SetMouseCapture(wheelHandler(pane0.tv, pane0))
 	pane1 := &pane{tv: tview.NewTextView().SetWrap(true).SetScrollable(true), logFile: logFile}
 	pane1.tv.SetBorder(true)
 	styleDark(pane1.tv, " — ")
+	pane1.tv.SetMouseCapture(wheelHandler(pane1.tv, pane1))
 	panes := [2]*pane{pane0, pane1}
 	status := tview.NewTextView().SetDynamicColors(true)
 	status.SetBackgroundColor(tcell.ColorBlack)
