@@ -365,6 +365,10 @@ func packagesStep() Step {
 				shTolerant(c, w, aptCmd+" install nodejs npm")
 				if !nodeOK(c) {
 					fmt.Fprintf(w, "в дистрибутиве старый node, ставлю NodeSource %d\n", c.O.NodeMajor)
+					// distro-пакеты node 12 держат /usr/include/node/* (libnode-dev)
+					// → file conflict с NodeSource, apt падает (маскируется багом
+					// dpkg 1.21.1 «paste subprocess ... Broken pipe») — снимаем
+					shTolerant(c, w, aptCmd+" remove libnode-dev libnode72 nodejs npm")
 					if err := sh(c, w, fmt.Sprintf("curl -fsSL https://deb.nodesource.com/setup_%d.x | bash -", c.O.NodeMajor)); err != nil {
 						return err
 					}
