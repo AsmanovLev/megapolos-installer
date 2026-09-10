@@ -197,3 +197,59 @@ func TestWizardNarrowTerm(t *testing.T) {
 	}
 	t.Fatal("визард не отрисовался за 5с")
 }
+
+// TestCursorMarkerInField: у сфокусированного поля символ под курсором
+// рисуется с красным фоном/белой буквой (маркер позиции курсора).
+func TestCursorMarkerInField(t *testing.T) {
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatal(err)
+	}
+	screen.SetSize(100, 30)
+	orig := newApp
+	newApp = func() *tview.Application {
+		return tview.NewApplication().SetScreen(screen)
+	}
+	t.Cleanup(func() { newApp = orig })
+
+	o := &steps.Opts{
+		HostIP: "10.0.2.2", CoreRef: "main", GUIRef: "main",
+		APIURL: "http://localhost:5100", DevMode: true,
+		DBName: "megapolos", DBUser: "megapolos",
+		AddSelfNode: true, NodeRootPassword: "megapolos",
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(o, 2) }()
+	defer func() {
+		screen.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(screenText(&screen), "core ref") {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		w, h := screen.Size()
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
+				_, _, style, _ := screen.GetContent(x, y)
+				fg, bg, _ := style.Decompose()
+				if bg == tcell.ColorRed && fg == tcell.ColorWhite {
+					return
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("маркер курсора (красный фон/белая буква) не найден на экране")
+}

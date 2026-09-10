@@ -76,6 +76,37 @@ func hostMirrorLabel(hostIP string) string {
 }
 
 // setTheme — классическая curses-палитра (whiptail / debian-installer):
+// markerField — InputField с рисованным маркером позиции курсора
+// (красный фон/белая буква): терминальный курсор на части терминалов
+// не отрисовывается, а рисованный маркер виден везде. Обёртка безопасна:
+// Form диспетчеризует ввод через InputHandler (без type-switch на *InputField).
+type markerField struct {
+	*tview.InputField
+}
+
+const cursorLabelW = 26 // ширина лейбла формы (max) + пробел — синхронно с BeforeDraw
+
+func (m *markerField) Draw(screen tcell.Screen) {
+	m.InputField.Draw(screen)
+	if !m.HasFocus() {
+		return
+	}
+	x, y, w, _ := m.GetRect()
+	fw := w - cursorLabelW - 2
+	if fw <= 0 {
+		return
+	}
+	text := []rune(m.GetText())
+	pos := len(text)
+	if pos > fw-1 {
+		pos = fw - 1 // длинный текст: поле прокручено, курсор у правого края
+	}
+	cx := x + 1 + cursorLabelW + pos
+	ch, _, _, _ := screen.GetContent(cx, y)
+	screen.SetContent(cx, y, ch, nil,
+		tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorRed))
+}
+
 // синий фон, серый диалог, чёрный текст, красная строка выбора.
 func setTheme() {
 	tview.Styles.PrimitiveBackgroundColor = tcell.ColorLightGray
@@ -141,10 +172,10 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(" Megapolos — установка ")
 	form.AddDropDown("Источник", srcLabels, srcIdx, nil)
-	form.AddInputField("URL/путь (для «свой»)", "", 0, nil, func(s string) { o.SourceCustom = strings.TrimSpace(s) })
-	form.AddInputField("core ref (ветка/тег/sha)", o.CoreRef, 0, nil, func(s string) { o.CoreRef = strings.TrimSpace(s) })
-	form.AddInputField("gui ref (ветка/тег/sha)", o.GUIRef, 0, nil, func(s string) { o.GUIRef = strings.TrimSpace(s) })
-	form.AddInputField("API URL для GUI", o.APIURL, 0, nil, func(s string) { o.APIURL = strings.TrimSpace(s) })
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("URL/путь (для «свой»)").SetText("").SetChangedFunc(func(s string) { o.SourceCustom = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("core ref (ветка/тег/sha)").SetText(o.CoreRef).SetChangedFunc(func(s string) { o.CoreRef = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("gui ref (ветка/тег/sha)").SetText(o.GUIRef).SetChangedFunc(func(s string) { o.GUIRef = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("API URL для GUI").SetText(o.APIURL).SetChangedFunc(func(s string) { o.APIURL = strings.TrimSpace(s) }).SetFieldWidth(34)})
 	guiModes := []string{"static: nginx на этой машине (быстро, оффлайн)", "app: приложение платформы с доменом и сертами (онлайн)", "none: без GUI"}
 	guiIdx := 0
 	if o.GUIApp {
@@ -153,7 +184,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 		guiIdx = 2
 	}
 	form.AddDropDown("GUI", guiModes, guiIdx, nil)
-	form.AddInputField("Домен GUI (app-режим)", o.GUIDomain, 0, nil, func(s string) { o.GUIDomain = strings.TrimSpace(s) })
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Домен GUI (app-режим)").SetText(o.GUIDomain).SetChangedFunc(func(s string) { o.GUIDomain = strings.TrimSpace(s) }).SetFieldWidth(34)})
 	form.AddCheckbox("HTTPS для GUI (:4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
@@ -165,11 +196,11 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 			o.Swap = "skip"
 		}
 	})
-	form.AddInputField("Базовый домен", o.BaseDomain, 0, nil, func(s string) { o.BaseDomain = strings.TrimSpace(s) })
-	form.AddInputField("Имя БД", o.DBName, 0, nil, func(s string) { o.DBName = strings.TrimSpace(s) })
-	form.AddInputField("Пользователь БД", o.DBUser, 0, nil, func(s string) { o.DBUser = strings.TrimSpace(s) })
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Базовый домен").SetText(o.BaseDomain).SetChangedFunc(func(s string) { o.BaseDomain = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Имя БД").SetText(o.DBName).SetChangedFunc(func(s string) { o.DBName = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Пользователь БД").SetText(o.DBUser).SetChangedFunc(func(s string) { o.DBUser = strings.TrimSpace(s) }).SetFieldWidth(34)})
 	form.AddCheckbox("Bootstrap ноды (API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
-	form.AddPasswordField("Пароль root для ноды", o.NodeRootPassword, 0, '*', func(s string) { o.NodeRootPassword = s })
+	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Пароль root для ноды").SetText(o.NodeRootPassword).SetMaskCharacter('*').SetChangedFunc(func(s string) { o.NodeRootPassword = s }).SetFieldWidth(34)})
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
 		choice := "gitlab"
@@ -254,12 +285,25 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 		}
 	}
 	restyle()
-	// ширина полей ввода — чтобы влезали в диалог на узких терминалах
-	for _, label := range []string{"core ref (ветка/тег/sha)", "gui ref (ветка/тег/sha)", "API URL для GUI", "Базовый домен", "Имя БД", "Пользователь БД", "Пароль root для ноды"} {
-		if f, ok := form.GetFormItemByLabel(label).(*tview.InputField); ok {
-			f.SetFieldWidth(34)
+	// ширина полей: 7/8 ширины терминала − лейблы − паддинг. Явная ширина
+	// обходит баг tview (fieldWidth=0 считает от формы на весь экран).
+	const maxLabelW = 26
+	app.SetBeforeDrawFunc(func(screen tcell.Screen) bool {
+		tw, _ := screen.Size()
+		fw := tw*7/8 - maxLabelW - 6
+		if fw < 12 {
+			fw = 12
 		}
-	}
+		if fw > 90 {
+			fw = 90
+		}
+		for i := 0; i < form.GetFormItemCount(); i++ {
+			if f, ok := form.GetFormItem(i).(interface{ SetFieldWidth(int) }); ok {
+				f.SetFieldWidth(fw)
+			}
+		}
+		return false // false = продолжить обычную отрисовку
+	})
 	// QueueUpdateDraw БЛОКИРУЕТ до выполнения в main-горутине; InputCapture сам
 	// выполняется в main-горутине → прямой вызов = дедлок (фриз после 1-й клавиши).
 	// Поэтому перестилизацию фокуса запускаем из свежей горутины: она выполнится
@@ -274,16 +318,15 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	})
 
 	// синий backdrop + центрированный «диалог» — классический вид curses-установщика.
-	// ВАЖНО: фиксированная ширина 64 — при width=0 (auto) InputField'ы этой
-	// версии tview считают ширину от формы на весь экран и текст улетает
-	// за правую рамку диалога (поймано дампом на 80 колонках).
+	// Диалог пропорционален терминалу (7/9 ширины), полям ширина задаётся
+	// в BeforeDraw-хуке выше (обход бага tview с fieldWidth=0).
 	backdrop := tview.NewBox().SetBackgroundColor(tcell.ColorNavy)
 	dialog := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(nil, 0, 1, false).
 			AddItem(form, 0, 5, true).
-			AddItem(nil, 0, 1, false), 64, 0, true).
+			AddItem(nil, 0, 1, false), 0, 7, true).
 		AddItem(nil, 0, 1, false)
 
 	pages.AddPage("backdrop", backdrop, true, true)
