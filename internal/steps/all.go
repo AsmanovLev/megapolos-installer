@@ -181,17 +181,15 @@ func cloneOrPull(repo, ref string) func(*Ctx, io.Writer) error {
 			return err
 		}
 		url := srcURL(c, repo)
-		// safe.directory для ВСЕХ участников git-операций (svc-юзер):
-		// источник (sqfs/кастом-путь = root:root), целевой репо (root-сервис
-		// пишет в worktree) — иначе git>=2.35 «dubious ownership» (exit 128)
-		for _, p := range []string{url, url + "/.git", dir, dir + "/.git"} {
-			if !strings.Contains(p, "://") {
-				shTolerant(c, w, fmt.Sprintf("sudo -u %s git config --global --add safe.directory %s", c.O.SvcUser, p))
-			}
-		}
+		// «dubious ownership» (git>=2.35.2, в т.ч. бэкпорт в jammy 2.34.1):
+		// git отвергает репо, владелец которого ≠ текущий юзер. Исключение на
+		// system-уровне (действует для root и svc, любые пути) — надёжнее,
+		// чем per-user global config (зависит от HOME под sudo).
+		shTolerant(c, w, "git config --system --replace-all safe.directory '*'")
 		if sys.FileExists(c, c.Ex, filepath.Join(dir, ".git")) {
-			// если репо когда-то трогал root — вернуть владельца (иначе git/npm под svc ломаются)
-			shTolerant(c, w, fmt.Sprintf("[ \"$(stat -c %%U %s)\" != %s ] && chown -R %s:%s %s || true", dir, c.O.SvcUser, c.O.SvcUser, c.O.SvcUser, dir))
+			// root-вмешательства прошлых прогонов оставляли root-owned файлы
+			// внутри .git → чиним владельца всего репо перед git-операциями
+			shTolerant(c, w, fmt.Sprintf("find %s/.git -user root -print -quit | grep -q . && chown -R %s:%s %s || true", dir, c.O.SvcUser, c.O.SvcUser, dir))
 			if err := asSvc(c, w, fmt.Sprintf("cd %s && git fetch --all --tags --prune", dir)); err != nil {
 				fmt.Fprintf(w, "WARN: git fetch: %v (оффлайн? продолжаю на локальной копии)\n", err)
 			}
