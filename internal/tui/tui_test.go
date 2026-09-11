@@ -18,10 +18,11 @@ func withSimScreen(t *testing.T) *tcell.SimulationScreen {
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetSize(120, 40)
 	orig := newApp
 	newApp = func() *tview.Application {
-		return tview.NewApplication().SetScreen(screen)
+		app := tview.NewApplication().SetScreen(screen) // SetScreen вызывает screen.Init()
+		screen.SetSize(120, 40)                         // → размер задаём ПОСЛЕ него
+		return app
 	}
 	t.Cleanup(func() { newApp = orig })
 	return &screen
@@ -114,8 +115,8 @@ func TestInputFieldShowsCursor(t *testing.T) {
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetSize(100, 30)
-	app := tview.NewApplication().SetScreen(screen)
+	app := tview.NewApplication().SetScreen(screen) // SetScreen вызывает screen.Init()
+	screen.SetSize(100, 30)                         // размер — после Init(), иначе сбросится к 80×25
 	form := tview.NewForm()
 	form.AddInputField("Поле", "abc", 40, nil, nil)
 	done := make(chan struct{})
@@ -146,10 +147,11 @@ func TestWizardNarrowTerm(t *testing.T) {
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetSize(80, 24)
 	orig := newApp
 	newApp = func() *tview.Application {
-		return tview.NewApplication().SetScreen(screen)
+		app := tview.NewApplication().SetScreen(screen) // SetScreen вызывает screen.Init()
+		screen.SetSize(80, 24)                          // размер — после Init()
+		return app
 	}
 	t.Cleanup(func() { newApp = orig })
 
@@ -198,17 +200,18 @@ func TestWizardNarrowTerm(t *testing.T) {
 	t.Fatal("визард не отрисовался за 5с")
 }
 
-// TestCursorMarkerInField: у сфокусированного поля символ под курсором
-// рисуется с красным фоном/белой буквой (маркер позиции курсора).
-func TestCursorMarkerInField(t *testing.T) {
+// TestCursorMarkerNavigation: полный E2E маркера курсора — ввод текста,
+// движение стрелками, позиция и символ под маркером, prefilled-поле.
+func TestCursorMarkerNavigation(t *testing.T) {
 	screen := tcell.NewSimulationScreen("UTF-8")
 	if err := screen.Init(); err != nil {
 		t.Fatal(err)
 	}
-	screen.SetSize(100, 30)
 	orig := newApp
 	newApp = func() *tview.Application {
-		return tview.NewApplication().SetScreen(screen)
+		app := tview.NewApplication().SetScreen(screen) // SetScreen вызывает screen.Init()
+		screen.SetSize(100, 30)                         // размер — после Init()
+		return app
 	}
 	t.Cleanup(func() { newApp = orig })
 
@@ -228,6 +231,7 @@ func TestCursorMarkerInField(t *testing.T) {
 		}
 	}()
 
+	// ждём визард
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if strings.Contains(screenText(&screen), "core ref") {
@@ -235,21 +239,110 @@ func TestCursorMarkerInField(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
 
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	redCell := func() (x, y int, ch rune, ok bool) {
 		w, h := screen.Size()
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				_, _, style, _ := screen.GetContent(x, y)
+		for yy := 0; yy < h; yy++ {
+			for xx := 0; xx < w; xx++ {
+				r, _, style, _ := screen.GetContent(xx, yy)
 				fg, bg, _ := style.Decompose()
 				if bg == tcell.ColorRed && fg == tcell.ColorWhite {
-					return
+					return xx, yy, r, true
 				}
 			}
 		}
-		time.Sleep(50 * time.Millisecond)
+		return 0, 0, 0, false
 	}
-	t.Fatal("маркер курсора (красный фон/белая буква) не найден на экране")
+	type runeAt = func(x, y int) rune
+	var getRune runeAt = func(x, y int) rune {
+		r, _, _, _ := screen.GetContent(x, y)
+		return r
+	}
+	// columnOf — колонка (cell-индекс) первого вхождения sub. strings.Index
+	// возвращает байтовое смещение, а row содержит многобайтные руны (кириллица
+	// в лейблах, «», рамки) — с ним mx (колонка) сравнивать нельзя.
+	columnOf := func(row, sub string) int {
+		bi := strings.Index(row, sub)
+		if bi < 0 {
+			return -1
+		}
+		return len([]rune(row[:bi]))
+	}
+
+	// Tab: dropdown → первое поле («URL/путь», пустое)
+	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+
+	// вводим "abc": маркер должен встать сразу за 'c' (пустая ячейка)
+	for _, r := range "abc" {
+		screen.InjectKey(tcell.KeyRune, r, tcell.ModNone)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	mx, my, mch, ok := redCell()
+	if !ok {
+		t.Fatal("маркер не найден после ввода")
+	}
+	// в строке маркера ищем "abc": конец текста = x('c')+1
+	w, _ := screen.Size()
+	row := ""
+	for x := 0; x < w; x++ {
+		row += string(getRune(x, my))
+	}
+	ci := columnOf(row, "abc")
+	if ci < 0 {
+		t.Fatalf("введённый текст %q не найден в строке маркера %d: %q", "abc", my, row)
+	}
+	if mx != ci+3 {
+		t.Fatalf("маркер на x=%d, а конец %q — x=%d (строка: %q)", mx, "abc", ci+3, row)
+	}
+
+	// ← : маркер над 'c'
+	screen.InjectKey(tcell.KeyLeft, 0, tcell.ModNone)
+	time.Sleep(120 * time.Millisecond)
+	mx, _, mch, _ = redCell()
+	if mch != 'c' {
+		t.Fatalf("после ← маркер должен быть над 'c', получили %q (x=%d)", string(mch), mx)
+	}
+	// ← : над 'b'
+	screen.InjectKey(tcell.KeyLeft, 0, tcell.ModNone)
+	time.Sleep(120 * time.Millisecond)
+	mx, _, mch, _ = redCell()
+	if mch != 'b' {
+		t.Fatalf("после ←← маркер должен быть над 'b', получили %q (x=%d)", string(mch), mx)
+	}
+	// → : обратно над 'c'
+	screen.InjectKey(tcell.KeyRight, 0, tcell.ModNone)
+	time.Sleep(120 * time.Millisecond)
+	_, _, mch, _ = redCell()
+	if mch != 'c' {
+		t.Fatalf("после → маркер должен вернуться над 'c', получили %q", string(mch))
+	}
+
+	// prefilled-поле: Tab → core ref ("main", курсор в конце, маркер за 'n')
+	screen.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+	time.Sleep(120 * time.Millisecond)
+	mx, my, mch, ok = redCell()
+	if !ok {
+		t.Fatal("маркер не найден на prefilled-поле")
+	}
+	row = ""
+	for x := 0; x < w; x++ {
+		row += string(getRune(x, my))
+	}
+	mi := columnOf(row, "main")
+	if mi < 0 {
+		t.Fatalf("%q не найдено в строке prefilled-поля: %q", "main", row)
+	}
+	if mx != mi+4 {
+		t.Fatalf("маркер на x=%d, а конец %q — x=%d (строка: %q)", mx, "main", mi+4, row)
+	}
+	// ←×4 → маркер над 'm' (первая буква)
+	for i := 0; i < 4; i++ {
+		screen.InjectKey(tcell.KeyLeft, 0, tcell.ModNone)
+	}
+	time.Sleep(150 * time.Millisecond)
+	_, _, mch, _ = redCell()
+	if mch != 'm' {
+		t.Fatalf("после ←×4 маркер должен быть над 'm', получили %q", string(mch))
+	}
 }

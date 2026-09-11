@@ -82,9 +82,48 @@ func hostMirrorLabel(hostIP string) string {
 // Form диспетчеризует ввод через InputHandler (без type-switch на *InputField).
 type markerField struct {
 	*tview.InputField
+	pos int // наша копия позиции курсора (в tview она приватна)
 }
 
-const cursorLabelW = 26 // ширина лейбла формы (max) + пробел — синхронно с BeforeDraw
+// newMarkerField — поле с трекингом позиции курсора: перехватываем клавиши
+// ДО обработки полем и ведём свою копию позиции (tview её не отдаёт).
+func newMarkerField(label, value string, mask rune, onChange func(string)) *markerField {
+	m := &markerField{InputField: tview.NewInputField().SetLabel(label).SetText(value)}
+	if mask != 0 {
+		m.SetMaskCharacter(mask)
+	}
+	m.SetChangedFunc(onChange)
+	m.pos = len([]rune(value)) // фокус → курсор в конце (типичный кейс)
+	m.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		n := len([]rune(m.GetText()))
+		switch ev.Key() {
+		case tcell.KeyLeft:
+			if m.pos > 0 {
+				m.pos--
+			}
+		case tcell.KeyRight:
+			if m.pos < n {
+				m.pos++
+			}
+		case tcell.KeyHome, tcell.KeyCtrlA:
+			m.pos = 0
+		case tcell.KeyEnd, tcell.KeyCtrlE:
+			m.pos = n
+		case tcell.KeyBackspace, tcell.KeyBackspace2:
+			if m.pos > 0 {
+				m.pos--
+			}
+		case tcell.KeyDelete:
+			// позиция не меняется
+		default:
+			if ev.Rune() != 0 {
+				m.pos++
+			}
+		}
+		return ev
+	})
+	return m
+}
 
 func (m *markerField) Draw(screen tcell.Screen) {
 	m.InputField.Draw(screen)
@@ -92,16 +131,31 @@ func (m *markerField) Draw(screen tcell.Screen) {
 		return
 	}
 	x, y, w, _ := m.GetRect()
-	fw := w - cursorLabelW - 2
+	// начало зоны поля: первая ячейка, чей фон отличается от лейблового
+	// (самокалибровка — ширина лейбл-зоны задаётся Form'ой и не константа)
+	_, _, labelSt, _ := screen.GetContent(x+2, y)
+	_, labelBg, _ := labelSt.Decompose()
+	contentX := -1
+	for cx := x + 1; cx < x+w-1; cx++ {
+		_, _, st, _ := screen.GetContent(cx, y)
+		_, bg, _ := st.Decompose()
+		if bg != labelBg {
+			contentX = cx
+			break
+		}
+	}
+	if contentX < 0 {
+		return
+	}
+	fw := x + w - 1 - contentX // доступная ширина поля до рамки
 	if fw <= 0 {
 		return
 	}
-	text := []rune(m.GetText())
-	pos := len(text)
+	pos := m.pos
 	if pos > fw-1 {
 		pos = fw - 1 // длинный текст: поле прокручено, курсор у правого края
 	}
-	cx := x + 1 + cursorLabelW + pos
+	cx := contentX + pos
 	ch, _, _, _ := screen.GetContent(cx, y)
 	screen.SetContent(cx, y, ch, nil,
 		tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorRed))
@@ -172,10 +226,10 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(" Megapolos — установка ")
 	form.AddDropDown("Источник", srcLabels, srcIdx, nil)
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("URL/путь (для «свой»)").SetText("").SetChangedFunc(func(s string) { o.SourceCustom = strings.TrimSpace(s) }).SetFieldWidth(34)})
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("core ref (ветка/тег/sha)").SetText(o.CoreRef).SetChangedFunc(func(s string) { o.CoreRef = strings.TrimSpace(s) }).SetFieldWidth(34)})
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("gui ref (ветка/тег/sha)").SetText(o.GUIRef).SetChangedFunc(func(s string) { o.GUIRef = strings.TrimSpace(s) }).SetFieldWidth(34)})
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("API URL для GUI").SetText(o.APIURL).SetChangedFunc(func(s string) { o.APIURL = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(newMarkerField("URL/путь (для «свой»)", "", 0, func(s string) { o.SourceCustom = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("core ref (ветка/тег/sha)", o.CoreRef, 0, func(s string) { o.CoreRef = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("gui ref (ветка/тег/sha)", o.GUIRef, 0, func(s string) { o.GUIRef = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("API URL для GUI", o.APIURL, 0, func(s string) { o.APIURL = strings.TrimSpace(s) }))
 	guiModes := []string{"static: nginx на этой машине (быстро, оффлайн)", "app: приложение платформы с доменом и сертами (онлайн)", "none: без GUI"}
 	guiIdx := 0
 	if o.GUIApp {
@@ -184,7 +238,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 		guiIdx = 2
 	}
 	form.AddDropDown("GUI", guiModes, guiIdx, nil)
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Домен GUI (app-режим)").SetText(o.GUIDomain).SetChangedFunc(func(s string) { o.GUIDomain = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(newMarkerField("Домен GUI (app-режим)", o.GUIDomain, 0, func(s string) { o.GUIDomain = strings.TrimSpace(s) }))
 	form.AddCheckbox("HTTPS для GUI (:4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
@@ -196,11 +250,11 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 			o.Swap = "skip"
 		}
 	})
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Базовый домен").SetText(o.BaseDomain).SetChangedFunc(func(s string) { o.BaseDomain = strings.TrimSpace(s) }).SetFieldWidth(34)})
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Имя БД").SetText(o.DBName).SetChangedFunc(func(s string) { o.DBName = strings.TrimSpace(s) }).SetFieldWidth(34)})
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Пользователь БД").SetText(o.DBUser).SetChangedFunc(func(s string) { o.DBUser = strings.TrimSpace(s) }).SetFieldWidth(34)})
+	form.AddFormItem(newMarkerField("Базовый домен", o.BaseDomain, 0, func(s string) { o.BaseDomain = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("Имя БД", o.DBName, 0, func(s string) { o.DBName = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("Пользователь БД", o.DBUser, 0, func(s string) { o.DBUser = strings.TrimSpace(s) }))
 	form.AddCheckbox("Bootstrap ноды (API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
-	form.AddFormItem(&markerField{tview.NewInputField().SetLabel("Пароль root для ноды").SetText(o.NodeRootPassword).SetMaskCharacter('*').SetChangedFunc(func(s string) { o.NodeRootPassword = s }).SetFieldWidth(34)})
+	form.AddFormItem(newMarkerField("Пароль root для ноды", o.NodeRootPassword, '*', func(s string) { o.NodeRootPassword = s }))
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
 		choice := "gitlab"
