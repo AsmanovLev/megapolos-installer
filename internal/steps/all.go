@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -213,11 +214,85 @@ func cloneOrPull(repo, ref string) func(*Ctx, io.Writer) error {
 // ---- шаги ------------------------------------------------------------------
 
 // All строит полный список шагов установки.
+// guiURL — публичный URL GUI для отображения в motd/сводке.
+func guiURL(o *Opts) string {
+	if !o.GUI {
+		return ""
+	}
+	if o.GUIApp && o.GUIDomain != "" {
+		proto := "https"
+		return proto + "://" + o.GUIDomain + "/"
+	}
+	// static nginx: внешний порт неизвестен ядру; показываем LAN IP
+	ip := o.LANIP
+	if ip == "" {
+		ip = "<ip>"
+	}
+	if o.GUITLS {
+		return "https://" + ip + ":4443/"
+	}
+	return "http://" + ip + ":8080/"
+}
+
 func All(o *Opts) []Step {
 	coreDir := filepath.Join(o.InstallDir, "megapolos-core")
 	guiDir := filepath.Join(o.InstallDir, "megapolos-gui")
 
 	steps := []Step{
+		StepFunc{
+			N: "wipe", D: nil,
+			DetectF: func(c *Ctx) (bool, string) {
+				if !c.O.Wipe {
+					return true, "очистка отключена (--wipe)"
+				}
+				return false, ""
+			},
+			RunF: func(c *Ctx, w io.Writer) error {
+				fmt.Fprintln(w, "=== Очистка предыдущей установки ===")
+
+				// 1. Останавливаем и удаляем systemd-юниты
+				for _, unit := range []string{"megapolos-core.service"} {
+					shTolerant(c, w, "systemctl stop "+unit+" 2>/dev/null || true")
+					shTolerant(c, w, "systemctl disable "+unit+" 2>/dev/null || true")
+					shTolerant(c, w, "rm -f /etc/systemd/system/"+unit+" /lib/systemd/system/"+unit)
+				}
+				shTolerant(c, w, "systemctl daemon-reload")
+
+				// 2. Убираем nginx-конфиги megapolos
+				shTolerant(c, w, "rm -f /etc/nginx/sites-available/megapolos* /etc/nginx/sites-enabled/megapolos*")
+				shTolerant(c, w, "nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null || true")
+
+				// 3. Останавливаем и удаляем docker-контейнеры платформы
+				shTolerant(c, w, "docker ps -a --filter name=megapolos -q | xargs -r docker rm -f 2>/dev/null || true")
+
+				// 4. Удаляем каталог установки
+				if c.O.InstallDir != "" && c.O.InstallDir != "/" {
+					fmt.Fprintf(w, "удаляю %s\n", c.O.InstallDir)
+					shTolerant(c, w, "rm -rf "+c.O.InstallDir)
+				}
+
+				// 5. Чистим кэш токенов/секретов (пересоздадутся)
+				shTolerant(c, w, "rm -f /root/megapolos-token.txt")
+
+				// 6. Убеждаемся, что postgresql работает
+				if out, err := exec.Command("systemctl", "enable", "--now", "postgresql").CombinedOutput(); err != nil {
+					fmt.Fprintf(w, "WARN: postgresql не запущен: %s\n%s\n", err, string(out))
+					fmt.Fprintf(w, "Установите вручную: apt install postgresql-%d\n", c.O.PgMajor)
+				}
+
+				// 7. Сброс БД (если включён)
+				if c.O.ResetDB {
+					fmt.Fprintln(w, "=== Сброс БД ===")
+					dbName, dbUser := c.O.DBName, c.O.DBUser
+					shTolerant(c, w, fmt.Sprintf("sudo -u postgres dropdb --if-exists %s", dbName))
+					shTolerant(c, w, fmt.Sprintf("sudo -u postgres dropuser --if-exists %s", dbUser))
+					fmt.Fprintf(w, "БД %s и роль %s удалены (пересоздадутся на шаге db)\n", dbName, dbUser)
+				}
+
+				fmt.Fprintln(w, "=== Очистка завершена ===")
+				return nil
+			},
+		},
 		StepFunc{
 			N: "bundle-debs", D: nil,
 			DetectF: func(c *Ctx) (bool, string) {
@@ -876,6 +951,28 @@ func tokenStep() Step {
 			if token == "" {
 				return fmt.Errorf("токен не найден за 3 минуты (journalctl -u megapolos-core)")
 			}
+			// JWT печатается ДО httpServer.listen(5100) — ждём пока порт реально поднимется.
+			fmt.Fprintln(w, "токен найден, жду пока API поднимется на :5100…")
+			for i := 0; i < 60; i++ {
+				if _, err := apiQuery(c, token, "{ __typename }", nil); err == nil {
+					break
+				}
+				// Проверяем, не упал ли core (crash-loop): если process exited — ранний выход.
+				if i > 0 && i%10 == 0 {
+					checkLogs, _ := out(c, "systemctl is-active megapolos-core 2>/dev/null")
+					if strings.TrimSpace(checkLogs) == "inactive" || strings.TrimSpace(checkLogs) == "failed" {
+						lastLogs, _ := out(c, "journalctl -u megapolos-core -b --no-pager -n 30 2>/dev/null")
+						fmt.Fprintf(w, "\n=== megapolos-core упал (status: %s) ===\n%s\n", strings.TrimSpace(checkLogs), lastLogs)
+						return fmt.Errorf("megapolos-core не запущен (status: %s). Проверьте: journalctl -u megapolos-core -b", strings.TrimSpace(checkLogs))
+					}
+				}
+				if i == 59 {
+					lastLogs, _ := out(c, "journalctl -u megapolos-core -b --no-pager -n 30 2>/dev/null")
+					fmt.Fprintf(w, "\n=== последние строки журнала megapolos-core ===\n%s\n", lastLogs)
+					return fmt.Errorf("API не поднялся на :5100 за 3 минуты после обнаружения токена")
+				}
+				time.Sleep(3 * time.Second)
+			}
 			c.O.Token = token
 			if err := writeFile(c, w, "/root/megapolos-token.txt", token+"\n", 0o600, ""); err != nil {
 				return err
@@ -884,7 +981,7 @@ func tokenStep() Step {
 			if err := writeFile(c, w, svcHome+"/megapolos-token.txt", token+"\n", 0o600, c.O.SvcUser+":"+c.O.SvcUser); err != nil {
 				return err
 			}
-			return writeFile(c, w, "/etc/motd", RenderMotd(token), 0o644, "")
+			return writeFile(c, w, "/etc/motd", RenderMotd(token, c.O.APIURL, guiURL(c.O)), 0o644, "")
 		},
 	}
 }

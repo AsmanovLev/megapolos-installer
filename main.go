@@ -142,6 +142,9 @@ func main() {
 		guiApp       = flag.Bool("gui-app", envOr("MEGAPOLOS_GUI_APP", "false") == "true", "GUI как приложение платформы (домен+серты), а не статический nginx")
 		guiDomain    = flag.String("gui-domain", envOr("MEGAPOLOS_GUI_DOMAIN", ""), "домен GUI-приложения (пусто = gui.<base-domain>)")
 		guiTLS       = flag.Bool("gui-tls", envOr("MEGAPOLOS_GUI_TLS", "true") != "false", "HTTPS для GUI (серт Megapolos Root CA, :4443)")
+		standalone   = flag.Bool("standalone", envOr("MEGAPOLOS_STANDALONE", "false") == "true", "независимый деплой: 1 нода, GUI-app, домены из base-domain, прод-режим")
+		wipe         = flag.Bool("wipe", envOr("MEGAPOLOS_WIPE", "false") == "true", "очистить предыдущую установку перед стартом")
+		resetDB      = flag.Bool("reset-db", envOr("MEGAPOLOS_RESET_DB", "false") == "true", "сбросить БД при wipe (dropdb + dropuser + пересоздать)")
 		devMode      = flag.Bool("dev-mode", envBool("MEGAPOLOS_DEV_MODE", true), "devMode (все контейнеры на localhost)")
 		debug        = flag.Bool("debug", envBool("MEGAPOLOS_DEBUG", false), "debug-логи ядра")
 		dbName       = flag.String("db-name", envOr("MEGAPOLOS_DB_NAME", "megapolos"), "имя БД")
@@ -221,7 +224,9 @@ func main() {
 	// API URL: явный флаг/env > проброс QEMU (localhost:API_PORT) > LAN IP > localhost.
 	// В QEMU user-net гостевой IP (10.0.2.15) с хоста недоступен — только проброс.
 	apiURLVal := *apiURL
-	if apiURLVal == "" {
+	if apiURLVal == "" && !*standalone && !*guiApp {
+		// автодетект ТОЛЬКО для devMode/локальной отладки;
+		// в standalone/gui-app bootstrap сам вычислит HTTPS URL
 		switch {
 		case vmEnv["NET"] != "bridge" && vmEnv["API_PORT"] != "":
 			apiURLVal = "http://localhost:" + vmEnv["API_PORT"]
@@ -265,6 +270,9 @@ func main() {
 		GUIApp:           *guiApp,
 		GUIDomain:        guiDomainVal,
 		GUITLS:           *guiTLS,
+		Standalone:       *standalone,
+		Wipe:             *wipe,
+		ResetDB:          *resetDB,
 		LANIP:            lanIP,
 		Swap:             *swapMode,
 		SvcUser:          "megapolos",
@@ -288,6 +296,20 @@ func main() {
 		opts.AddSelfNode = false
 	default:
 		opts.AddSelfNode = true // auto → да (и в TUI вопрос стоит по умолчанию «да»)
+	}
+	if opts.Standalone {
+		// Независимый деплой: 1 нода, GUI как приложение платформы,
+		// домены — из base-domain, прод-режим (без devMode).
+		opts.GUI = true
+		opts.GUIApp = true
+		opts.AddSelfNode = true
+		opts.DevMode = false
+		if opts.BaseDomain != "" {
+			opts.GUIDomain = "gui." + opts.BaseDomain
+			if opts.APIURL == "" {
+				opts.APIURL = "https://" + opts.BaseDomain + ":5104"
+			}
+		}
 	}
 
 	// TUI только при живом терминале

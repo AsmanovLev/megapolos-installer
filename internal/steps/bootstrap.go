@@ -465,10 +465,16 @@ built:
 		return err
 	}
 
-	// API для браузера: в devMode — api.megapolos.localhost (виртхост ноды)
-	apiURL := "https://api.megapolos.localhost"
-	if !c.O.DevMode {
-		apiURL = "https://api." + c.O.GUIDomain
+	// API для браузера: явно заданный --api-url имеет приоритет; иначе в devMode —
+	// api.megapolos.localhost (виртхост ноды на :443), в проде — <BaseDomain>:5104
+	// (nginx.core.prod.template слушает 5104 ssl, на 443 api-виртхоста нет).
+	apiURL := c.O.APIURL
+	if apiURL == "" {
+		if c.O.DevMode {
+			apiURL = "https://api.megapolos.localhost"
+		} else {
+			apiURL = "https://" + c.O.BaseDomain + ":5104"
+		}
 	}
 	container := map[string]any{
 		"name": appName, "role": "app", "node": nodeID, "image": imageID,

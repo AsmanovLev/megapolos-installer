@@ -66,6 +66,9 @@ type Opts struct {
 	GUIApp           bool       // GUI как приложение платформы (install.ts), а не статический nginx
 	GUIDomain        string     // домен GUI-приложения (app-режим; дефолт gui.<BaseDomain>)
 	GUITLS           bool       // HTTPS для GUI (серт Megapolos Root CA, :443)
+	Standalone       bool       // независимый деплой: 1 нода, GUI-app, домены из BaseDomain
+	Wipe             bool       // очистить предыдущую установку перед стартом
+	ResetDB          bool       // сбросить БД при wipe (dropdb + dropuser + пересоздать)
 	LANIP            string     // внешний IPv4 машины (для дефолтов и сводки)
 	VMGUIPort        string     // hostfwd-порт GUI (QEMU, из /etc/megapolos-vm.env)
 	VMGUITLSPort     string     // hostfwd-порт GUI HTTPS

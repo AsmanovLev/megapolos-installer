@@ -51,6 +51,7 @@ func RenderCoreUnit(coreDir string) string {
 Description=Megapolos Core (GraphQL API :5100)
 After=network-online.target postgresql.service docker.service
 Wants=network-online.target
+Requires=postgresql.service
 
 [Service]
 Type=simple
@@ -121,13 +122,17 @@ func RenderSudoers(user string) string {
 }
 
 // RenderMotd — приветствие после установки.
-func RenderMotd(token string) string {
+func RenderMotd(token, apiURL, guiURL string) string {
+	guiLine := "  GUI:        " + guiURL
+	if guiURL == "" {
+		guiLine = "  GUI:        (отключён)"
+	}
 	return fmt.Sprintf(`
   Megapolos установлен.
-  GUI:        http://<ip-vm>/
-  API:        http://<ip-vm>:5100
+%s
+  API:        %s
   Root-токен: %s
   (токен также в /root/megapolos-token.txt)
 
-`, token)
+`, guiLine, apiURL, token)
 }

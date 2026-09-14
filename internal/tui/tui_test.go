@@ -246,7 +246,7 @@ func TestCursorMarkerNavigation(t *testing.T) {
 			for xx := 0; xx < w; xx++ {
 				r, _, style, _ := screen.GetContent(xx, yy)
 				fg, bg, _ := style.Decompose()
-				if bg == tcell.ColorRed && fg == tcell.ColorWhite {
+				if fg == tcell.ColorWhite && bg == tcell.ColorRed {
 					return xx, yy, r, true
 				}
 			}

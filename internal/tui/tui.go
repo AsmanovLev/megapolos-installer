@@ -77,18 +77,20 @@ func hostMirrorLabel(hostIP string) string {
 
 // setTheme — классическая curses-палитра (whiptail / debian-installer):
 // markerField — InputField с рисованным маркером позиции курсора
-// (красный фон/белая буква): терминальный курсор на части терминалов
+// (красная буква/белый фон): терминальный курсор на части терминалов
 // не отрисовывается, а рисованный маркер виден везде. Обёртка безопасна:
 // Form диспетчеризует ввод через InputHandler (без type-switch на *InputField).
 type markerField struct {
 	*tview.InputField
-	pos int // наша копия позиции курсора (в tview она приватна)
+	pos       int  // наша копия позиции курсора (в tview она приватна)
+	required  bool // пустое поле → красный лейбл
+	origLabel string // исходный лейбл (для восстановления после ▸)
 }
 
 // newMarkerField — поле с трекингом позиции курсора: перехватываем клавиши
 // ДО обработки полем и ведём свою копию позиции (tview её не отдаёт).
-func newMarkerField(label, value string, mask rune, onChange func(string)) *markerField {
-	m := &markerField{InputField: tview.NewInputField().SetLabel(label).SetText(value)}
+func newMarkerField(label, value string, mask rune, required bool, onChange func(string)) *markerField {
+	m := &markerField{InputField: tview.NewInputField().SetLabel(label).SetText(value), required: required, origLabel: label}
 	if mask != 0 {
 		m.SetMaskCharacter(mask)
 	}
@@ -226,10 +228,11 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form := tview.NewForm()
 	form.SetBorder(true).SetTitle(" Megapolos — установка ")
 	form.AddDropDown("Источник", srcLabels, srcIdx, nil)
-	form.AddFormItem(newMarkerField("URL/путь (для «свой»)", "", 0, func(s string) { o.SourceCustom = strings.TrimSpace(s) }))
-	form.AddFormItem(newMarkerField("core ref (ветка/тег/sha)", o.CoreRef, 0, func(s string) { o.CoreRef = strings.TrimSpace(s) }))
-	form.AddFormItem(newMarkerField("gui ref (ветка/тег/sha)", o.GUIRef, 0, func(s string) { o.GUIRef = strings.TrimSpace(s) }))
-	form.AddFormItem(newMarkerField("API URL для GUI", o.APIURL, 0, func(s string) { o.APIURL = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("URL/путь (для «свой»)", "", 0, false, func(s string) { o.SourceCustom = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("core ref (ветка/тег/sha)", o.CoreRef, 0, true, func(s string) { o.CoreRef = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("gui ref (ветка/тег/sha)", o.GUIRef, 0, true, func(s string) { o.GUIRef = strings.TrimSpace(s) }))
+	form.AddCheckbox("Независимый деплой (1 нода, домены из базового, GUI-app)", o.Standalone, func(b bool) { o.Standalone = b })
+	form.AddFormItem(newMarkerField("Базовый домен", o.BaseDomain, 0, true, func(s string) { o.BaseDomain = strings.TrimSpace(s) }))
 	guiModes := []string{"static: nginx на этой машине (быстро, оффлайн)", "app: приложение платформы с доменом и сертами (онлайн)", "none: без GUI"}
 	guiIdx := 0
 	if o.GUIApp {
@@ -238,7 +241,8 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 		guiIdx = 2
 	}
 	form.AddDropDown("GUI", guiModes, guiIdx, nil)
-	form.AddFormItem(newMarkerField("Домен GUI (app-режим)", o.GUIDomain, 0, func(s string) { o.GUIDomain = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("Домен GUI (app-режим)", o.GUIDomain, 0, false, func(s string) { o.GUIDomain = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("API URL для GUI", o.APIURL, 0, false, func(s string) { o.APIURL = strings.TrimSpace(s) }))
 	form.AddCheckbox("HTTPS для GUI (:4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
@@ -250,11 +254,12 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 			o.Swap = "skip"
 		}
 	})
-	form.AddFormItem(newMarkerField("Базовый домен", o.BaseDomain, 0, func(s string) { o.BaseDomain = strings.TrimSpace(s) }))
-	form.AddFormItem(newMarkerField("Имя БД", o.DBName, 0, func(s string) { o.DBName = strings.TrimSpace(s) }))
-	form.AddFormItem(newMarkerField("Пользователь БД", o.DBUser, 0, func(s string) { o.DBUser = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("Имя БД", o.DBName, 0, false, func(s string) { o.DBName = strings.TrimSpace(s) }))
+	form.AddFormItem(newMarkerField("Пользователь БД", o.DBUser, 0, false, func(s string) { o.DBUser = strings.TrimSpace(s) }))
 	form.AddCheckbox("Bootstrap ноды (API)", o.AddSelfNode, func(b bool) { o.AddSelfNode = b })
-	form.AddFormItem(newMarkerField("Пароль root для ноды", o.NodeRootPassword, '*', func(s string) { o.NodeRootPassword = s }))
+	form.AddFormItem(newMarkerField("Пароль root для ноды", o.NodeRootPassword, '*', true, func(s string) { o.NodeRootPassword = s }))
+	form.AddCheckbox("Очистить предыдущую установку (--wipe)", o.Wipe, func(b bool) { o.Wipe = b })
+	form.AddCheckbox("Сбросить БД (--reset-db)", o.ResetDB, func(b bool) { o.ResetDB = b })
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
 		choice := "gitlab"
@@ -277,8 +282,23 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 		o.GitBase, o.SrcKind, o.SrcHuman = src.Base, src.Kind, src.Human
 		gi, _ := form.GetFormItemByLabel("GUI").(*tview.DropDown).GetCurrentOption()
 		o.GUI, o.GUIApp = gi != 2, gi == 1
-		if o.GUIApp && o.GUIDomain == "" {
+		if o.Standalone {
+			// Независимый деплой: одна нода, всё авто из базового домена.
+			// GUI — приложение платформы; нода localhost; домены — из BaseDomain.
+			o.GUIApp = true
+			o.GUI = true
+			o.AddSelfNode = true
+			if o.BaseDomain != "" {
+				o.GUIDomain = "gui." + o.BaseDomain
+				o.APIURL = "https://" + o.BaseDomain + ":5104"
+			}
+			o.DevMode = false // прод-режим: реальные домены, self-signed CA от ядра
+		}
+		if o.GUIApp && o.GUIDomain == "" && o.BaseDomain != "" {
 			o.GUIDomain = "gui." + o.BaseDomain
+		}
+		if o.BaseDomain != "" && o.APIURL == "" && !o.DevMode {
+			o.APIURL = "https://" + o.BaseDomain + ":5104"
 		}
 		if o.CoreRef == "" || o.GUIRef == "" {
 			runErr = fmt.Errorf("core/gui ref не могут быть пустыми")
@@ -313,10 +333,25 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	focusedField := tcell.StyleDefault.Foreground(tcell.ColorWhite).Background(tcell.ColorMaroon)
 	labelPlain := tcell.StyleDefault.Foreground(tcell.ColorBlack)
 	labelFocus := tcell.StyleDefault.Foreground(tcell.ColorMaroon).Bold(true)
+	labelRequiredEmpty := tcell.StyleDefault.Foreground(tcell.ColorRed).Bold(true)
 	restyle := func() {
 		fi, _ := form.GetFocusedItemIndex()
 		for i := 0; i < form.GetFormItemCount(); i++ {
 			switch item := form.GetFormItem(i).(type) {
+			case *markerField:
+				if i == fi {
+					item.SetFieldStyle(focusedField)
+					item.SetLabel("▸ " + item.origLabel)
+					item.SetLabelStyle(labelFocus)
+				} else {
+					item.SetFieldStyle(unfocusedField)
+					item.SetLabel(item.origLabel)
+					if item.required && item.GetText() == "" {
+						item.SetLabelStyle(labelRequiredEmpty)
+					} else {
+						item.SetLabelStyle(labelPlain)
+					}
+				}
 			case *tview.InputField:
 				if i == fi {
 					item.SetFieldStyle(focusedField)

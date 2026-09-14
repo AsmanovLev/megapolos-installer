@@ -5,11 +5,19 @@
 /bundle/debs/
 /bundle/repos/
 /bundle/pg/
+/bundle/docker/
 /bundle/installer
 /bundle/install.sh
 /bundle/INFO.txt
 /bundle/*.sqfs
 /bundle/*.tar.gz
+/bundle/pip/
+/bundle/ansible-collections/
+/bundle/node_modules-megapolos-core.tar.gz
+/bundle/node_modules-megapolos-gui.tar.gz
+/bundle/npm-cache.tar.gz
+/bundle/gui-build.tar.gz
+/bundle/node-gyp-cache.tar.gz
 /bundle/package-lock.*.json
 
 # VM: образы, рантайм, кэши
@@ -17,4 +25,9 @@
 /vm/run/
 /vm/cache/*
 !/vm/cache/verdaccio.yml
-/bundle/docker/
+
+# IDE / misc
+*.swp
+*.swo
+*~
+.DS_Store
