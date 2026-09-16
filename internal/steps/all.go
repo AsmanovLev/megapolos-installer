@@ -299,6 +299,9 @@ func All(o *Opts) []Step {
 				if c.O.ForceCompat {
 					return true, "проверка совместимости отключена (--force-compatibility)"
 				}
+				if c.O.RepoPackages {
+					return true, "пакеты из репозиториев (--repo-packages) — дефолты совместимы"
+				}
 				if c.O.BundleDir == "" {
 					return true, "бандл не используется"
 				}
