@@ -897,7 +897,12 @@ func showSummary(app *tview.Application, pages *tview.Pages, o *steps.Opts, logP
 	if o.SrcHuman != "" {
 		fmt.Fprintf(&sb, "\n Источник кода:           [yellow]%s[-] (core@%s, gui@%s)\n", o.SrcHuman, o.CoreRef, o.GUIRef)
 	}
-	fmt.Fprintf(&sb, "\n Лог установки:           %s   (c — копия в буфер)\n\n [gray]q / Esc — выход[-]", logPath)
+	fmt.Fprintf(&sb, "\n Лог установки:           %s   (c — копия в буфер)\n", logPath)
+	if cmd := o.ReproductionCommand(); cmd != "megapolos-installer " {
+		sb.WriteString("\n Для воспроизведения:\n")
+		fmt.Fprintf(&sb, " [yellow]%s[-]\n", cmd)
+	}
+	sb.WriteString("\n [gray]q / Esc — выход[-]")
 
 	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	tv.SetBackgroundColor(tcell.ColorDefault)

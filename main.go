@@ -262,6 +262,7 @@ func main() {
 
 	opts := &steps.Opts{
 		GitBase:          gitBase,
+		Source:           *source,
 		CoreRef:          *coreRef,
 		GUIRef:           *guiRef,
 		APIURL:           apiURLVal,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 
 	"megapolos/installer/internal/sys"
@@ -62,6 +63,7 @@ type Opts struct {
 	BaseDomain       string     // базовый домен инстансов (megapolos.local); пусто = не создавать
 	SrcKind          SourceKind // разрешённый источник (ResolveSource)
 	SrcHuman         string     // человекочитаемый вердикт источника
+	Source           string     //原始 --source 标志值 (auto|bundle|gitlab|local|custom)
 	GUI              bool       // ставить и обслуживать GUI (static — nginx :80, или app — платформа)
 	GUIApp           bool       // GUI как приложение платформы (install.ts), а не статический nginx
 	GUIDomain        string     // домен GUI-приложения (app-режим; дефолт gui.<BaseDomain>)
@@ -83,6 +85,79 @@ type Opts struct {
 	Token            string // заполняется шагом token
 	NodeMajor        int
 	PgMajor          int
+}
+
+func (o *Opts) ReproductionCommand() string {
+	var args []string
+	add := func(name, val string) {
+		if val == "" || val == "false" {
+			return
+		}
+		if val == "true" {
+			args = append(args, "--"+name)
+			return
+		}
+		args = append(args, "--"+name+"="+val)
+	}
+	addb := func(name string, val bool) {
+		if val {
+			args = append(args, "--"+name)
+		}
+	}
+	if o.Source != "" && o.Source != "auto" {
+		add("source", o.Source)
+	}
+	if o.CoreRef != "" && o.CoreRef != "main" {
+		add("core-ref", o.CoreRef)
+	}
+	if o.GUIRef != "" && o.GUIRef != "main" {
+		add("gui-ref", o.GUIRef)
+	}
+	if o.Source == "custom" && o.GitBase != "" {
+		add("source-custom", o.GitBase)
+	}
+	if o.APIURL != "" {
+		add("api-url", o.APIURL)
+	}
+	addb("gui", o.GUI)
+	addb("gui-app", o.GUIApp)
+	if o.GUIDomain != "" {
+		add("gui-domain", o.GUIDomain)
+	}
+	addb("gui-tls", o.GUITLS)
+	addb("standalone", o.Standalone)
+	addb("wipe", o.Wipe)
+	addb("reset-db", o.ResetDB)
+	addb("repo-packages", o.RepoPackages)
+	addb("force-compatibility", o.ForceCompat)
+	addb("dev-mode", o.DevMode)
+	addb("debug", o.Debug)
+	if o.DBName != "megapolos" {
+		add("db-name", o.DBName)
+	}
+	if o.DBUser != "megapolos" {
+		add("db-user", o.DBUser)
+	}
+	if o.InstallDir != "/opt/megapolos" {
+		add("dir", o.InstallDir)
+	}
+	if o.BundleDir != "" {
+		add("bundle", o.BundleDir)
+	}
+	addb("self-node", o.AddSelfNode)
+	if o.NodeRootPassword != "" && o.NodeRootPassword != "megapolos" {
+		add("node-root-password", "***")
+	}
+	if o.BaseDomain != "" && o.BaseDomain != "megapolos.local" {
+		add("base-domain", o.BaseDomain)
+	}
+	if o.Swap != "" && o.Swap != "auto" {
+		add("swap", o.Swap)
+	}
+	if o.HostIP != "" {
+		add("host-ip", o.HostIP)
+	}
+	return "megapolos-installer " + strings.Join(args, " ")
 }
 
 // Ctx — контекст, пробрасываемый в шаги.
