@@ -401,7 +401,7 @@ func All(o *Opts) []Step {
 					fmt.Fprintf(w, "apt через кэш %s\n", c.O.AptProxy)
 				}
 				aptUpdate(c, w)
-				pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl"
+				pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl certbot"
 				if c.O.GUI && !c.O.GUIApp {
 					pkgs += " nginx" // nginx только для static GUI (app-режим: nginx-контейнер ноды)
 				}
@@ -569,7 +569,7 @@ func packagesStep() Step {
 			// docker-compose-v2: registry платформы поднимается через docker compose
 			if !sys.CommandExists(c, c.Ex, "docker") || !sys.CommandExists(c, c.Ex, "ansible") ||
 				!sys.DpkgInstalled(c, c.Ex, "docker-compose-v2") {
-				if err := sh(c, w, aptCmd+" install docker.io docker-compose-v2 ansible"); err != nil {
+				if err := sh(c, w, aptCmd+" install docker.io docker-compose-v2 ansible sshpass"); err != nil {
 					return err
 				}
 			}
