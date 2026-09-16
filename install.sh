@@ -88,6 +88,21 @@ info "Checksum verified"
 chmod +x "$DEST"
 info "Downloaded successfully ($(du -h "$DEST" | cut -f1))"
 
-# Run the installer
+# Build the command for display
+CMD="sudo $DEST $*"
 info "Running installer..."
-exec "$DEST" "$@"
+set +e
+"$DEST" "$@"
+RESULT=$?
+set -e
+
+echo ""
+if [[ $RESULT -eq 0 ]]; then
+  info "Installation successful!"
+  info "To reproduce this exact installation:"
+  echo "  $CMD"
+  echo ""
+else
+  err "Installation failed (exit $RESULT)"
+fi
+exit $RESULT
