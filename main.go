@@ -162,11 +162,20 @@ func main() {
 		noTUI        = flag.Bool("no-tui", false, "без TUI (текстовый вывод)")
 		hostIP       = flag.String("host-ip", envOr("MEGAPOLOS_HOST_IP", ""), "IP хоста с кэшами/зеркалом (пусто = vm.env HOST_IP, иначе 10.0.2.2)")
 		showVersion  = flag.Bool("version", false, "версия и выход")
+		printCmd     = flag.Bool("print-command", false, "вывести exact command для воспроизведения и выйти")
 	)
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("megapolos-installer dev")
+		return
+	}
+
+	if *printCmd {
+		fmt.Println(buildCommandLine(*coreRef, *guiRef, *source, *sourceCustom, *apiURL,
+			*guiDomain, *dbName, *dbUser, *dir, *bundle, *selfNode, "***", *baseDomain, *swapMode, *hostIP,
+			*guiOn, *guiApp, *guiTLS, *standalone, *wipe, *resetDB, *repoPackages, *forceCompat,
+			*devMode, *debug, *yes, *noTUI))
 		return
 	}
 	if os.Geteuid() != 0 {
@@ -395,4 +404,81 @@ func main() {
 		fmt.Printf("  Нода:   %s → 127.0.0.1 (root)\n", hostname)
 	}
 	fmt.Println("  Логи:   journalctl -u megapolos-core -f")
+}
+
+func buildCommandLine(coreRef, guiRef, source, sourceCustom, apiURL, guiDomain, dbName, dbUser, dir, bundle, selfNode, nodePass, baseDomain, swapMode, hostIP string, guiOn, guiApp, guiTLS, standalone, wipe, resetDB, repoPackages, forceCompat, devMode, debug, yes, noTUI bool) string {
+	var args []string
+	add := func(name, val string) {
+		if val == "" || val == "false" {
+			return
+		}
+		if val == "true" {
+			args = append(args, "--"+name)
+			return
+		}
+		args = append(args, "--"+name+"="+val)
+	}
+	addb := func(name string, val bool) {
+		if val {
+			args = append(args, "--"+name)
+		}
+	}
+	if coreRef != "main" {
+		add("core-ref", coreRef)
+	}
+	if guiRef != "main" {
+		add("gui-ref", guiRef)
+	}
+	if source != "auto" {
+		add("source", source)
+	}
+	if sourceCustom != "" {
+		add("source-custom", sourceCustom)
+	}
+	if apiURL != "" {
+		add("api-url", apiURL)
+	}
+	addb("gui", guiOn)
+	addb("gui-app", guiApp)
+	if guiDomain != "" {
+		add("gui-domain", guiDomain)
+	}
+	addb("gui-tls", guiTLS)
+	addb("standalone", standalone)
+	addb("wipe", wipe)
+	addb("reset-db", resetDB)
+	addb("repo-packages", repoPackages)
+	addb("force-compatibility", forceCompat)
+	addb("dev-mode", devMode)
+	addb("debug", debug)
+	if dbName != "megapolos" {
+		add("db-name", dbName)
+	}
+	if dbUser != "megapolos" {
+		add("db-user", dbUser)
+	}
+	if dir != "/opt/megapolos" {
+		add("dir", dir)
+	}
+	if bundle != "" {
+		add("bundle", bundle)
+	}
+	if selfNode != "auto" {
+		add("self-node", selfNode)
+	}
+	if nodePass != "megapolos" {
+		add("node-root-password", "***")
+	}
+	if baseDomain != "megapolos.local" {
+		add("base-domain", baseDomain)
+	}
+	if swapMode != "auto" {
+		add("swap", swapMode)
+	}
+	if hostIP != "" {
+		add("host-ip", hostIP)
+	}
+	addb("yes", yes)
+	addb("no-tui", noTUI)
+	return "megapolos-installer " + strings.Join(args, " ")
 }
