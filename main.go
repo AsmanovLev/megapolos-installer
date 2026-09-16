@@ -145,6 +145,8 @@ func main() {
 		standalone   = flag.Bool("standalone", envOr("MEGAPOLOS_STANDALONE", "false") == "true", "независимый деплой: 1 нода, GUI-app, домены из base-domain, прод-режим")
 		wipe         = flag.Bool("wipe", envOr("MEGAPOLOS_WIPE", "false") == "true", "очистить предыдущую установку перед стартом")
 		resetDB      = flag.Bool("reset-db", envOr("MEGAPOLOS_RESET_DB", "false") == "true", "сбросить БД при wipe (dropdb + dropuser + пересоздать)")
+		repoPackages = flag.Bool("repo-packages", envOr("MEGAPOLOS_REPO_PACKAGES", "false") == "true", "пакеты из репозиториев (без bundle-debs)")
+		forceCompat = flag.Bool("force-compatibility", envOr("MEGAPOLOS_FORCE_COMPAT", "false") == "true", "пропустить проверку совместимости бандла")
 		devMode      = flag.Bool("dev-mode", envBool("MEGAPOLOS_DEV_MODE", true), "devMode (все контейнеры на localhost)")
 		debug        = flag.Bool("debug", envBool("MEGAPOLOS_DEBUG", false), "debug-логи ядра")
 		dbName       = flag.String("db-name", envOr("MEGAPOLOS_DB_NAME", "megapolos"), "имя БД")
@@ -273,6 +275,8 @@ func main() {
 		Standalone:       *standalone,
 		Wipe:             *wipe,
 		ResetDB:          *resetDB,
+		RepoPackages:     *repoPackages,
+		ForceCompat:      *forceCompat,
 		LANIP:            lanIP,
 		Swap:             *swapMode,
 		SvcUser:          "megapolos",

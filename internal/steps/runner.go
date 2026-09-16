@@ -69,6 +69,8 @@ type Opts struct {
 	Standalone       bool       // независимый деплой: 1 нода, GUI-app, домены из BaseDomain
 	Wipe             bool       // очистить предыдущую установку перед стартом
 	ResetDB          bool       // сбросить БД при wipe (dropdb + dropuser + пересоздать)
+	RepoPackages     bool       // пакеты из репозиториев (без bundle-debs)
+	ForceCompat      bool       // пропустить проверку совместимости бандла
 	LANIP            string     // внешний IPv4 машины (для дефолтов и сводки)
 	VMGUIPort        string     // hostfwd-порт GUI (QEMU, из /etc/megapolos-vm.env)
 	VMGUITLSPort     string     // hostfwd-порт GUI HTTPS

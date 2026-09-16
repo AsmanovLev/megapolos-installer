@@ -260,6 +260,8 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddFormItem(newMarkerField("Пароль root для ноды", o.NodeRootPassword, '*', true, func(s string) { o.NodeRootPassword = s }))
 	form.AddCheckbox("Очистить предыдущую установку (--wipe)", o.Wipe, func(b bool) { o.Wipe = b })
 	form.AddCheckbox("Сбросить БД (--reset-db)", o.ResetDB, func(b bool) { o.ResetDB = b })
+	form.AddCheckbox("Пакеты из репозиториев (--repo-packages)", o.RepoPackages, func(b bool) { o.RepoPackages = b })
+	form.AddCheckbox("Пропустить совместимость (--force-compatibility)", o.ForceCompat, func(b bool) { o.ForceCompat = b })
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
 		choice := "gitlab"

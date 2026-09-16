@@ -294,8 +294,73 @@ func All(o *Opts) []Step {
 			},
 		},
 		StepFunc{
+			N: "compat", D: nil,
+			DetectF: func(c *Ctx) (bool, string) {
+				if c.O.ForceCompat {
+					return true, "проверка совместимости отключена (--force-compatibility)"
+				}
+				if c.O.BundleDir == "" {
+					return true, "бандл не используется"
+				}
+				distroFile := filepath.Join(c.O.BundleDir, ".distro")
+				b, err := os.ReadFile(distroFile)
+				if err != nil {
+					return true, ".distro маркер не найден — пропуск проверки"
+				}
+				bundleDistro := strings.TrimSpace(string(b))
+				if bundleDistro == "" {
+					return true, ".distro пуст — пропуск проверки"
+				}
+				currentDistro := ""
+				if data, err := os.ReadFile("/etc/os-release"); err == nil {
+					for _, line := range strings.Split(string(data), "\n") {
+						if strings.HasPrefix(line, "VERSION_CODENAME=") {
+							currentDistro = strings.Trim(strings.TrimPrefix(line, "VERSION_CODENAME="), "\"")
+							break
+						}
+					}
+				}
+				if currentDistro == "" {
+					return true, "не удалось определить VERSION_CODENAME — пропуск"
+				}
+				if bundleDistro != currentDistro {
+					return false, fmt.Sprintf("БАНДЛ ДЛЯ %s, СИСТЕМА — %s (!)", bundleDistro, currentDistro)
+				}
+				return true, fmt.Sprintf("совместимо (%s)", bundleDistro)
+			},
+			RunF: func(c *Ctx, w io.Writer) error {
+				distroFile := filepath.Join(c.O.BundleDir, ".distro")
+				b, _ := os.ReadFile(distroFile)
+				bundleDistro := strings.TrimSpace(string(b))
+				currentDistro := ""
+				if data, err := os.ReadFile("/etc/os-release"); err == nil {
+					for _, line := range strings.Split(string(data), "\n") {
+						if strings.HasPrefix(line, "VERSION_CODENAME=") {
+							currentDistro = strings.Trim(strings.TrimPrefix(line, "VERSION_CODENAME="), "\"")
+							break
+						}
+					}
+				}
+				if bundleDistro != currentDistro {
+					return fmt.Errorf(
+						"БАНДЛ СОБРАН ДЛЯ %s, А СИСТЕМА — %s\n"+
+							"  Установка 22.04 пакетов на 24.04 (или наоборот) приводит к kernel panic!\n"+
+							"  Исправление:\n"+
+							"    1. Скачайте нужный бандл (megapolos-bundle-%s.sqfs)\n"+
+							"    2. ИЛИ используйте --force-compatibility (на свой страх и риск)\n"+
+							"    3. ИЛИ используйте --repo-packages (пакеты из репозиториев, без бандла)",
+						bundleDistro, currentDistro, currentDistro,
+					)
+				}
+				return nil
+			},
+		},
+		StepFunc{
 			N: "bundle-debs", D: nil,
 			DetectF: func(c *Ctx) (bool, string) {
+				if c.O.RepoPackages {
+					return true, "пакеты из репозиториев (--repo-packages)"
+				}
 				if c.O.BundleDir == "" || !sys.FileExists(c, c.Ex, filepath.Join(c.O.BundleDir, "debs")) {
 					return true, "бандл не найден — пакеты из репозиториев/кэша"
 				}

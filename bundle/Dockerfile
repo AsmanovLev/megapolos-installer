@@ -73,6 +73,7 @@ RUN mkdir -p /out/repos \
  && mkdir -p /out/pg \
  && cp /src/megapolos-core/install/newpostgresql.sql /out/pg/newpostgresql.sql
 
+COPY .distro /out/.distro
 COPY installer /out/installer
 COPY pip /out/pip
 COPY ansible-collections /out/ansible-collections

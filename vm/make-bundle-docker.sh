@@ -50,6 +50,12 @@ cp megapolos-installer "$CTX/installer"
 cp install/bootstrap.sh "$CTX/install.sh"
 cp bundle/Dockerfile "$CTX/Dockerfile"
 
+# .distro маркер для compat-check установщика
+case "$VER" in
+  22.04) echo "jammy" > "$CTX/.distro" ;;
+  24.04) echo "noble" > "$CTX/.distro" ;;
+esac
+
 echo "== 3/4: $ENGINE build (ubuntu $VER)"
 $ENGINE build --build-arg "UBUNTU=$VER" -t "megapolos-bundle-builder:$VER" "$CTX"
 
