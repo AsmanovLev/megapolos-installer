@@ -74,6 +74,17 @@ if ! file "$DEST" | grep -q "ELF"; then
   err "Downloaded file is not an ELF binary — bad release asset?"
 fi
 
+# Verify checksum
+info "Verifying checksum..."
+CHECKSUM_URL="${INSTALLER_URL_BASE}/${TAG}/SHA256SUMS.txt"
+CHECKSUM_FILE="${TMP_DIR}/SHA256SUMS.txt"
+curl -fsSL --max-time 30 -o "$CHECKSUM_FILE" "$CHECKSUM_URL" \
+  || err "Failed to download checksums"
+cd "$TMP_DIR" && sha256sum --status -c SHA256SUMS.txt \
+  || err "Checksum mismatch — possible corrupted download"
+cd - >/dev/null
+info "Checksum verified"
+
 chmod +x "$DEST"
 info "Downloaded successfully ($(du -h "$DEST" | cut -f1))"
 
