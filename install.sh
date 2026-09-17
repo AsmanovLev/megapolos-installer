@@ -88,11 +88,37 @@ info "Checksum verified"
 chmod +x "$DEST"
 info "Downloaded successfully ($(du -h "$DEST" | cut -f1))"
 
-# Build the command for display
-CMD="sudo $DEST $*"
+# Авто-детект существующей установки: если на хосте уже есть /opt/megapolos
+# или маркеры стадий — подсказываем --resume, чтобы повторный curl|bash
+# долечивал, а не начинал с нуля. Юзер может перебить через явный флаг.
+AUTO_FLAGS=""
+has_existing=0
+if [[ -d /opt/megapolos ]]; then
+  has_existing=1
+fi
+if [[ -d /var/lib/megapolos ]] && ls /var/lib/megapolos/stage-*.done 2>/dev/null | grep -q .; then
+  has_existing=1
+fi
+if [[ $has_existing -eq 1 ]]; then
+  user_passed_resume=0
+  for arg in "$@"; do
+    if [[ "$arg" == "--resume" || "$arg" == --resume=* ]]; then
+      user_passed_resume=1
+    fi
+  done
+  if [[ $user_passed_resume -eq 0 ]]; then
+    AUTO_FLAGS="--resume"
+    warn "На хосте найдена существующая установка (или её следы)."
+    warn "Автоматически добавляю --resume (долечить, а не переустанавливать)."
+    warn "Если хотите начать с нуля — добавьте --wipe."
+  fi
+fi
+
+# Собираем итоговую команду для вывода
+CMD="sudo $DEST $* ${AUTO_FLAGS}"
 info "Running installer..."
 set +e
-"$DEST" "$@"
+"$DEST" "$@" ${AUTO_FLAGS}
 RESULT=$?
 set -e
 
@@ -104,5 +130,9 @@ if [[ $RESULT -eq 0 ]]; then
   echo ""
 else
   err "Installation failed (exit $RESULT)"
+  echo ""
+  info "Диагностика: sudo $DEST --doctor"
+  info "Логи ansible: sudo $DEST --info"
+  info "Возобновить: sudo $DEST --resume (или --retry-stage=<init|prepare-for-core|install-registry>)"
 fi
 exit $RESULT
