@@ -84,6 +84,8 @@ type Opts struct {
 	Hostname         string
 	Token            string // заполняется шагом token
 	NodeMajor        int
+	Resume           bool   // пропустить уже завершённые стадии (по маркерам и артефактам)
+	RetryStage       string // init | prepare-for-core | install-registry (повторить только эту стадию)
 	PgMajor          int
 }
 

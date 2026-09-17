@@ -163,6 +163,10 @@ func main() {
 		hostIP       = flag.String("host-ip", envOr("MEGAPOLOS_HOST_IP", ""), "IP хоста с кэшами/зеркалом (пусто = vm.env HOST_IP, иначе 10.0.2.2)")
 		showVersion  = flag.Bool("version", false, "версия и выход")
 		printCmd     = flag.Bool("print-command", false, "вывести exact command для воспроизведения и выйти")
+resume       = flag.Bool("resume", false, "продолжить установку: пропустить уже завершённые стадии (по маркерам и артефактам)")
+	retryStage   = flag.String("retry-stage", "", "повторить только стадию: init|prepare-for-core|install-registry (без --resume)")
+	showInfo     = flag.Bool("info", false, "показать последние логи ansible (стадии платформы) и выйти")
+	doctor       = flag.Bool("doctor", false, "диагностика существующей установки (что есть/чего нет) и рекомендация: --resume | --retry-stage | --wipe")
 	)
 	flag.Parse()
 
@@ -177,6 +181,27 @@ func main() {
 			*guiOn, *guiApp, *guiTLS, *standalone, *wipe, *resetDB, *repoPackages, *forceCompat,
 			*devMode, *debug, *yes, *noTUI))
 		return
+	}
+	if *doctor {
+		_, code := steps.Doctor(os.Stderr)
+		os.Exit(code)
+	}
+	if *showInfo {
+		os.Exit(steps.ShowInfo(os.Stderr))
+	}
+	// --resume: сначала диагностика, потом — если нашли сломанную стадию —
+	// подставляем --retry-stage, чтобы не переустанавливать всё с нуля.
+	if *resume && *retryStage == "" {
+		report, code := steps.Doctor(os.Stderr)
+		if code == 0 && report.AllStagesDone {
+			fmt.Fprintln(os.Stderr, "установка завершена — нечего продолжать")
+			os.Exit(0)
+		}
+		if report.FirstBroken != "" {
+			fmt.Fprintf(os.Stderr, "\n>>> авто-выбор: --retry-stage=%s\n\n", report.FirstBroken)
+			*retryStage = report.FirstBroken
+		}
+		// идём дальше в обычный main() — nodeChain увидит RetryStage
 	}
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "FAIL: запусти от root: sudo installer")
@@ -296,6 +321,8 @@ func main() {
 		Hostname:         hostname,
 		NodeMajor:        18,
 		PgMajor:          16,
+		Resume:           *resume,
+		RetryStage:       *retryStage,
 	}
 	// hostfwd-порты имеют смысл только в user-net (в bridge VM доступна по LAN-IP)
 	if vmEnv["NET"] != "bridge" {

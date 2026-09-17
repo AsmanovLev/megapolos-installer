@@ -219,22 +219,119 @@ func ensureRegistry(c *Ctx, w io.Writer) error {
 	return nil
 }
 
+// stageKey → каноничный ключ стадии (для маркера, --retry-stage, --info).
+const (
+	stageInit          = "init"
+	stagePrepareForCore = "prepare-for-core"
+	stageInstallRegistry = "install-registry"
+)
+
+func stageMarkerPath(key string) string {
+	return "/var/lib/megapolos/stage-" + key + ".done"
+}
+
+func writeStageMarker(c *Ctx, key string) {
+	if err := os.MkdirAll("/var/lib/megapolos", 0o755); err != nil {
+		return
+	}
+	_ = os.WriteFile(stageMarkerPath(key), []byte("done"), 0o644)
+}
+
+// stageSpec — декларативное описание стадии ноды (label, мутация, артефакт).
+type stageSpec struct {
+	Key      string
+	Label    string
+	Mutation string
+	// hasArtifact: возвращает true если стадия уже выполнена (артефакт на месте)
+	HasArtifact func(c *Ctx) bool
+	// onFailureHint: подсказка пользователю при провале стадии (ansible log)
+	OnFailureHint string
+}
+
+func nodeStages() []stageSpec {
+	return []stageSpec{
+		{
+			Key:      stageInit,
+			Label:    "INIT (nginx, единый CA)",
+			Mutation: "initNode",
+			HasArtifact: func(c *Ctx) bool {
+				return outOK(c, "docker ps --format '{{.Names}}' | grep -qx nginx")
+			},
+			OnFailureHint: "docker exec nginx nginx -t; journalctl -u megapolos-core -n 200 --no-pager",
+		},
+		{
+			Key:      stagePrepareForCore,
+			Label:    "PREPARE FOR CORE",
+			Mutation: "prepareNodeForCore",
+			HasArtifact: func(c *Ctx) bool {
+				return sys.FileExists(c, c.Ex, "/data/nginx/conf/core.conf")
+			},
+			OnFailureHint: "docker exec nginx nginx -t; ls -la /data/nginx/conf/",
+		},
+		{
+			Key:      stageInstallRegistry,
+			Label:    "INSTALL REGISTRY",
+			Mutation: "installRegistryToNode",
+			HasArtifact: func(c *Ctx) bool {
+				return sys.FileExists(c, c.Ex, "/data/registry/docker-compose.yml")
+			},
+			OnFailureHint: "ls -la /data/registry/; docker logs registry 2>&1 | tail -50",
+		},
+	}
+}
+
 // nodeChain — INIT → PREPARE FOR CORE → INSTALL REGISTRY (строго последовательно:
-// стадии меняют state machine ноды).
+// стадии меняют state machine ноды). При --resume уже завершённые стадии
+// (по маркеру И артефакту) пропускаются; при --retry-stage — запускается
+// только указанная стадия (если её ещё нет). Перед каждой стадией — предикт
+// артефакта: если его нет и маркер есть — пишем предупреждение (артефакт
+// могли удалить руками) и перезапускаем.
 func nodeChain(c *Ctx, w io.Writer, nodeID string) error {
-	for _, stage := range []struct{ label, mutation string }{
-		{"INIT (nginx, единый CA)", "initNode"},
-		{"PREPARE FOR CORE", "prepareNodeForCore"},
-		{"INSTALL REGISTRY", "installRegistryToNode"},
-	} {
-		fmt.Fprintf(w, "%s...\n", stage.label)
-		if _, err := gql(c, w, fmt.Sprintf("mutation($id: String!) { %s(id: $id) }", stage.mutation),
-			map[string]any{"id": nodeID}); err != nil {
-			return fmt.Errorf("%s: %w", stage.mutation, err)
+	stages := nodeStages()
+	// --retry-stage: фильтруем до одной стадии
+	if c.O.RetryStage != "" {
+		var filtered []stageSpec
+		for _, s := range stages {
+			if s.Key == c.O.RetryStage {
+				filtered = append(filtered, s)
+			}
 		}
-		if err := waitNodeRunning(c, w, nodeID, stage.label); err != nil {
+		if len(filtered) == 0 {
+			return fmt.Errorf("--retry-stage=%s: неизвестная стадия (допустимо: %s, %s, %s)",
+				c.O.RetryStage, stageInit, stagePrepareForCore, stageInstallRegistry)
+		}
+		stages = filtered
+	}
+
+	for _, stage := range stages {
+		markerExists := sys.FileExists(c, c.Ex, stageMarkerPath(stage.Key))
+		artifactOK := stage.HasArtifact(c)
+		if artifactOK && (markerExists || c.O.Resume) {
+			fmt.Fprintf(w, "%s: артефакт на месте — пропускаю%s\n",
+				stage.Label, func() string { if markerExists { return " (по маркеру)" }; return " (--resume)" }())
+			writeStageMarker(c, stage.Key)
+			continue
+		}
+		if markerExists && !artifactOK {
+			fmt.Fprintf(w, "WARN: %s: маркер есть, но артефакта нет — перезапускаю\n", stage.Label)
+			_ = os.Remove(stageMarkerPath(stage.Key))
+		}
+		fmt.Fprintf(w, "%s...\n", stage.Label)
+		if _, err := gql(c, w, fmt.Sprintf("mutation($id: String!) { %s(id: $id) }", stage.Mutation),
+			map[string]any{"id": nodeID}); err != nil {
+			return fmt.Errorf("%s: %w\nПодсказка: %s", stage.Label, err, stage.OnFailureHint)
+		}
+		if err := waitNodeRunning(c, w, nodeID, stage.Label); err != nil {
 			return err
 		}
+		// post-check: артефакт должен появиться (ansible смог перезаписать)
+		if !stage.HasArtifact(c) {
+			return fmt.Errorf("%s: ansible завершился (нода running), но артефакт не создан\n"+
+				"Это значит ansible вернул exit 0, но задача не выполнилась — смотри:\n  %s\n"+
+				"Либо покажи последний лог: installer --info",
+				stage.Label, stage.OnFailureHint)
+		}
+		writeStageMarker(c, stage.Key)
 	}
 	return nil
 }
