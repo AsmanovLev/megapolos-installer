@@ -304,6 +304,54 @@ func detectFromRunningCore() map[string]string {
 	return out
 }
 
+// existingInstallPrompt — интерактивный выбор при обнаружении существующей установки.
+// Возвращает действие: "resume", "edit", "wipe", или пустую строку (выход).
+func existingInstallPrompt(baseDomain, guiDomain, apiURL string) string {
+	fmt.Println()
+	fmt.Println("╔══════════════════════════════════════════════════════════════╗")
+	fmt.Println("║     ОБНАРУЖЕНА СУЩЕСТВУЮЩАЯ УСТАНОВКА MEGAPOLOS              ║")
+	fmt.Println("╚══════════════════════════════════════════════════════════════╝")
+	fmt.Println()
+	if baseDomain != "" {
+		fmt.Printf("  Базовый домен:      %s\n", baseDomain)
+	}
+	if guiDomain != "" {
+		fmt.Printf("  Домен GUI:          %s\n", guiDomain)
+	}
+	if apiURL != "" {
+		fmt.Printf("  API URL:            %s\n", apiURL)
+	}
+	fmt.Println()
+	fmt.Println("  Выберите действие:")
+	fmt.Println()
+	fmt.Println("  1) Восстановить с этими настройками  (--resume)")
+	fmt.Println("     Продолжить установку с прежними параметрами.")
+	fmt.Println()
+	fmt.Println("  2) Поменять настройки и восстановить")
+	fmt.Println("     Запустить мастер настройки с текущими значениями.")
+	fmt.Println()
+	fmt.Println("  3) Переустановить с нуля  (--wipe --reset-db)")
+	fmt.Println("     Удалить всё и установить заново.")
+	fmt.Println()
+	fmt.Print("> Введите номер [1]: ")
+
+	var choice string
+	fmt.Scanln(&choice)
+	if choice == "" {
+		choice = "1"
+	}
+	switch choice {
+	case "1":
+		return "resume"
+	case "2":
+		return "edit"
+	case "3":
+		return "wipe"
+	default:
+		return "resume"
+	}
+}
+
 func main() {
 	var (
 		coreRef      = flag.String("core-ref", envOr("MEGAPOLOS_CORE_REF", "main"), "ветка/тег/sha megapolos-core")
@@ -391,6 +439,52 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		}
 	}
 
+	// Интерактивный выбор при обнаружении существующей установки.
+	// Показываем только если:
+	// - есть следы установки (cfg-файл ИЛИ маркеры стадий)
+	// - не в специальных режимах (--doctor, --info, --print-command)
+	// - явно не попросили --wipe
+	hasExisting := false
+	if _, err := os.Stat(installerCfgPath); err == nil {
+		hasExisting = true
+	}
+	if !hasExisting {
+		for _, key := range []string{"init", "prepare-for-core", "install-registry"} {
+			if _, err := os.Stat("/var/lib/megapolos/stage-" + key + ".done"); err == nil {
+				hasExisting = true
+				break
+			}
+		}
+	}
+	autoResume := os.Getenv("MEGAPOLOS_AUTO_RESUME") == "1"
+	// Показываем интерактивный выбор если:
+	// - есть следы установки И
+	// - не в специальных режимах (--doctor, --info...) И
+	// - не вызвано с --wipe И
+	// - (авто-добавлен --resume.install.sh) ИЛИ (не подавлен интерактив --yes/--noTUI)
+	skipPrompt := !hasExisting || *doctor || *showInfo || *printCmd || *wipe || (*resume && !autoResume) || *yes || *noTUI
+	if !skipPrompt {
+		action := existingInstallPrompt(*baseDomain, *guiDomain, *apiURL)
+		switch action {
+		case "resume":
+			*resume = true
+			*yes = true
+			*noTUI = true
+		case "edit":
+			*resume = true
+			*yes = false
+			*noTUI = false
+		case "wipe":
+			*wipe = true
+			*resetDB = true
+			*yes = true
+			*noTUI = true
+		default:
+			fmt.Println("Отменено.")
+			os.Exit(0)
+		}
+	}
+
 	if *showVersion {
 		fmt.Println("megapolos-installer dev")
 		return
@@ -424,10 +518,11 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		}
 		// идём дальше в обычный main() — nodeChain увидит RetryStage
 	}
-	// Recovery-режимы (--resume / --retry-stage): никогда не запускаем TUI,
-	// берём дефолты без вопросов — пользователь явно попросил долечить,
-	// а не интерактивничать.
-	if *resume || *retryStage != "" {
+	// Recovery-режимы (--resume / --retry-stage): если явно передано
+	// (не авто-добавлено install.sh) — берём дефолты без вопросов.
+	// Если MEGAPOLOS_AUTO_RESUME=1 (авто-добавлено) — показываем интерактивный
+	// выбор, чтобы юзер мог поменять настройки или выбрать переустановку.
+	if (*resume || *retryStage != "") && !autoResume {
 		*yes = true
 		*noTUI = true
 	}

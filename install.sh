@@ -108,6 +108,7 @@ if [[ $has_existing -eq 1 ]]; then
   done
   if [[ $user_passed_resume -eq 0 ]]; then
     AUTO_FLAGS="--resume"
+    export MEGAPOLOS_AUTO_RESUME=1
     warn "На хосте найдена существующая установка (или её следы)."
     warn "Автоматически добавляю --resume (долечить, а не переустанавливать)."
     warn "Если хотите начать с нуля — добавьте --wipe."
