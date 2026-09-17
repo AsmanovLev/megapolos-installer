@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -131,6 +132,178 @@ func existingConfig(coreDir string) (secret, dbPass string) {
 	return secret, dbPass
 }
 
+// installerCfgPath — путь к сохранённому конфигу установщика (для --resume).
+const installerCfgPath = "/var/lib/megapolos/installer.cfg"
+
+// saveInstallerCfg — сохраняет ключевые opts в JSON-файл (для --resume).
+// Используется после успешной установки.
+func saveInstallerCfg(opts *steps.Opts) {
+	if err := os.MkdirAll("/var/lib/megapolos", 0o755); err != nil {
+		return
+	}
+	cfg := struct {
+		Source         string
+		CoreRef        string
+		GUIRef         string
+		APIURL         string
+		GUI            bool
+		GUIApp         bool
+		GUIDomain      string
+		GUITLS         bool
+		Standalone     bool
+		BaseDomain     string
+		RepoPackages   bool
+		ForceCompat    bool
+		DevMode        bool
+		DBName         string
+		DBUser         string
+		InstallDir     string
+		NodeRootPass   string
+		Swap           string
+		HostIP         string
+	}{
+		Source: opts.Source, CoreRef: opts.CoreRef, GUIRef: opts.GUIRef,
+		APIURL: opts.APIURL, GUI: opts.GUI, GUIApp: opts.GUIApp,
+		GUIDomain: opts.GUIDomain, GUITLS: opts.GUITLS, Standalone: opts.Standalone,
+		BaseDomain: opts.BaseDomain, RepoPackages: opts.RepoPackages,
+		ForceCompat: opts.ForceCompat, DevMode: opts.DevMode,
+		DBName: opts.DBName, DBUser: opts.DBUser,
+		InstallDir: opts.InstallDir, NodeRootPass: opts.NodeRootPassword,
+		Swap: opts.Swap, HostIP: opts.HostIP,
+	}
+	b, _ := json.MarshalIndent(cfg, "", "  ")
+	_ = os.WriteFile(installerCfgPath, b, 0o644)
+}
+
+// loadInstallerCfg — загружает ранее сохранённый конфиг (для --resume).
+// CLI-флаги имеют приоритет (отмечены через flag.Visit).
+// Возвращает map с КЛЮЧАМИ FLAG-имён (lower-case), не JSON-ключами.
+func loadInstallerCfg(explicit map[string]bool) map[string]string {
+	data, err := os.ReadFile(installerCfgPath)
+	if err != nil {
+		return nil
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	// JSON-ключ → flag-имя
+	flagName := map[string]string{
+		"Source": "source", "CoreRef": "core-ref", "GUIRef": "gui-ref",
+		"APIURL": "api-url", "GUI": "gui", "GUIApp": "gui-app",
+		"GUIDomain": "gui-domain", "GUITLS": "gui-tls", "Standalone": "standalone",
+		"BaseDomain": "base-domain", "RepoPackages": "repo-packages",
+		"ForceCompat": "force-compatibility", "DevMode": "dev-mode",
+		"DBName": "db-name", "DBUser": "db-user", "InstallDir": "dir",
+		"NodeRootPass": "node-root-password", "Swap": "swap", "HostIP": "host-ip",
+	}
+	out := make(map[string]string)
+	for jsonKey, v := range cfg {
+		fName, ok := flagName[jsonKey]
+		if !ok {
+			continue
+		}
+		if explicit[fName] {
+			continue // CLI перебил
+		}
+		switch x := v.(type) {
+		case string:
+			if x != "" {
+				out[fName] = x
+			}
+		case bool:
+			if x {
+				out[fName] = "true"
+			}
+		}
+	}
+	return out
+}
+
+// applyCfgToFlag — если значение в карте есть — установить его в flag-var.
+func applyCfgToFlag(name, val string, set func(string)) {
+	if val == "" {
+		return
+	}
+	set(val)
+}
+
+// rawGraphQL — простой POST к GraphQL endpoint без retry. Используется
+// в detectFromRunningCore (разовая проверка из main до старта установки).
+func rawGraphQL(endpoint, token, query string, variables map[string]any) (json.RawMessage, error) {
+	body, _ := json.Marshal(map[string]any{"query": query, "variables": variables})
+	req, err := http.NewRequest("POST", endpoint, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("graphql %d: %s", resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return b, nil
+}
+
+// detectFromRunningCore — пытается вытащить base-domain / gui-domain / api-url
+// из живого ядра через GraphQL. Возвращает map с ключами "baseDomain",
+// "guiDomain", "apiURL" (пусто если ничего нет).
+func detectFromRunningCore() map[string]string {
+	out := map[string]string{}
+	token, err := os.ReadFile("/root/megapolos-token.txt")
+	if err != nil {
+		return out
+	}
+	tok := strings.TrimSpace(string(token))
+	if tok == "" {
+		return out
+	}
+	// base-domain: getAllDomain с флагом isBaseDomain
+	data, err := rawGraphQL("http://127.0.0.1:5100", tok,
+		`{ getAllDomain { id name isBaseDomain } }`, nil)
+	if err == nil {
+		var parsed struct {
+			GetAllDomain []struct {
+				Name         string `json:"name"`
+				IsBaseDomain bool   `json:"isBaseDomain"`
+			} `json:"getAllDomain"`
+		}
+		if json.Unmarshal(data, &parsed) == nil {
+			for _, d := range parsed.GetAllDomain {
+				if d.IsBaseDomain {
+					out["baseDomain"] = d.Name
+					break
+				}
+			}
+			// GUI-домен: ищем "gui.<baseDomain>"
+			if base, ok := out["baseDomain"]; ok {
+				guiGuess := "gui." + base
+				for _, d := range parsed.GetAllDomain {
+					if d.Name == guiGuess {
+						out["guiDomain"] = guiGuess
+					}
+				}
+			}
+		}
+	}
+	// API URL: читаем /opt/megapolos/megapolos-core/.env (MEGAPOLOS_SERVER)
+	if envData, err := os.ReadFile("/opt/megapolos/megapolos-core/.env"); err == nil {
+		for _, line := range strings.Split(string(envData), "\n") {
+			if strings.HasPrefix(line, "MEGAPOLOS_SERVER=") {
+				out["apiURL"] = strings.Trim(strings.TrimPrefix(line, "MEGAPOLOS_SERVER="), "\"' ")
+			}
+		}
+	}
+	return out
+}
+
 func main() {
 	var (
 		coreRef      = flag.String("core-ref", envOr("MEGAPOLOS_CORE_REF", "main"), "ветка/тег/sha megapolos-core")
@@ -169,6 +342,54 @@ resume       = flag.Bool("resume", false, "продолжить установк
 	doctor       = flag.Bool("doctor", false, "диагностика существующей установки (что есть/чего нет) и рекомендация: --resume | --retry-stage | --wipe")
 	)
 	flag.Parse()
+
+	// Если есть сохранённый конфиг (от прошлого запуска) и юзер не передал
+	// соответствующий флаг явно — подставляем значения из файла. Это критично
+	// для --resume / curl|bash без флагов: иначе base-domain сбросится на
+	// дефолт и установщик создаст «левый» домен рядом с существующим.
+	explicit := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	if cfg := loadInstallerCfg(explicit); cfg != nil {
+		applyCfgToFlag("source", cfg["source"], func(v string) { *source = v })
+		applyCfgToFlag("core-ref", cfg["core-ref"], func(v string) { *coreRef = v })
+		applyCfgToFlag("gui-ref", cfg["gui-ref"], func(v string) { *guiRef = v })
+		applyCfgToFlag("api-url", cfg["api-url"], func(v string) { *apiURL = v })
+		applyCfgToFlag("gui-domain", cfg["gui-domain"], func(v string) { *guiDomain = v })
+		applyCfgToFlag("base-domain", cfg["base-domain"], func(v string) { *baseDomain = v })
+		applyCfgToFlag("db-name", cfg["db-name"], func(v string) { *dbName = v })
+		applyCfgToFlag("db-user", cfg["db-user"], func(v string) { *dbUser = v })
+		applyCfgToFlag("dir", cfg["dir"], func(v string) { *dir = v })
+		applyCfgToFlag("node-root-password", cfg["node-root-password"], func(v string) { *nodePass = v })
+		applyCfgToFlag("swap", cfg["swap"], func(v string) { *swapMode = v })
+		applyCfgToFlag("host-ip", cfg["host-ip"], func(v string) { *hostIP = v })
+		// bool-флаги (ключи — flag-имена, lower-case)
+		if v, ok := cfg["gui"]; ok { *guiOn = v != "false" }
+		if v, ok := cfg["gui-app"]; ok { *guiApp = v != "false" }
+		if v, ok := cfg["gui-tls"]; ok { *guiTLS = v != "false" }
+		if v, ok := cfg["standalone"]; ok { *standalone = v != "false" }
+		if v, ok := cfg["repo-packages"]; ok { *repoPackages = v != "false" }
+		if v, ok := cfg["force-compatibility"]; ok { *forceCompat = v != "false" }
+		if v, ok := cfg["dev-mode"]; ok { *devMode = v != "false" }
+		fmt.Fprintf(os.Stderr, "[INFO] применён сохранённый конфиг: %s\n", installerCfgPath)
+	}
+
+	// Если cfg-файла нет (напр. установка упала до первого сохранения),
+	// пробуем вытащить существующие значения из живого ядра через GraphQL.
+	// Это позволяет --resume подхватить прошлый --base-domain без явного флага.
+	if _, err := os.Stat(installerCfgPath); err != nil {
+		if detected := detectFromRunningCore(); len(detected) > 0 {
+			fmt.Fprintf(os.Stderr, "[INFO] обнаружены параметры существующей установки: %v\n", detected)
+			if v, ok := detected["baseDomain"]; ok && !explicit["base-domain"] {
+				*baseDomain = v
+			}
+			if v, ok := detected["guiDomain"]; ok && !explicit["gui-domain"] {
+				*guiDomain = v
+			}
+			if v, ok := detected["apiURL"]; ok && !explicit["api-url"] {
+				*apiURL = v
+			}
+		}
+	}
 
 	if *showVersion {
 		fmt.Println("megapolos-installer dev")
@@ -403,6 +624,8 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		fmt.Fprintln(os.Stderr, "FAIL:", err)
 		os.Exit(1)
 	}
+	// Сохраняем конфиг для --resume / повторных curl|bash.
+	saveInstallerCfg(opts)
 	fmt.Println("\n==> ГОТОВО")
 	ip := opts.LANIP
 	if ip == "" {
