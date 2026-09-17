@@ -203,6 +203,13 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		}
 		// идём дальше в обычный main() — nodeChain увидит RetryStage
 	}
+	// Recovery-режимы (--resume / --retry-stage): никогда не запускаем TUI,
+	// берём дефолты без вопросов — пользователь явно попросил долечить,
+	// а не интерактивничать.
+	if *resume || *retryStage != "" {
+		*yes = true
+		*noTUI = true
+	}
 	if os.Geteuid() != 0 {
 		fmt.Fprintln(os.Stderr, "FAIL: запусти от root: sudo installer")
 		os.Exit(1)

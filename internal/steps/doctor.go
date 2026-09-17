@@ -160,7 +160,7 @@ func doctorAPIState(c *Ctx) string {
 		return "— токен не найден в /root/megapolos-token.txt"
 	}
 	c.O.Token = token
-	data, err := apiQuery(c, token, "{ getVersion }", nil)
+	data, err := apiQuery(c, token, "{ getAppVersion }", nil)
 	if err != nil {
 		return fmt.Sprintf("✗ API не отвечает: %v", err)
 	}
