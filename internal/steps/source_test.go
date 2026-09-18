@@ -95,12 +95,19 @@ func TestSrcURL(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "megapolos-core.git"), 0o755)
 	ctx := &Ctx{Context: context.Background(), O: &Opts{}, Ex: sys.Real{}}
 
-	// бандл в приоритете
-	ctx.O.BundleDir = "/mnt/b"
-	os.MkdirAll("/mnt/b/repos", 0o755) // не создаём сам .git — FileExists по директории repos сработает только на файл; эмулируем наличие
-	os.WriteFile("/mnt/b/repos/megapolos-core.git", []byte("x"), 0o644)
-	if got := srcURL(ctx, "megapolos-core"); got != "/mnt/b/repos/megapolos-core.git" {
-		t.Fatalf("bundle: %s", got)
+	// бандл в приоритете: repos лежат рядом с debs. Используем temp-каталог,
+	// а не хардкод /mnt/b, чтобы тест не зависел от root/привилегий.
+	bundle := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(bundle, "repos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bundle, "repos", "megapolos-core.git"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx.O.BundleDir = bundle
+	want := filepath.Join(bundle, "repos", "megapolos-core.git")
+	if got := srcURL(ctx, "megapolos-core"); got != want {
+		t.Fatalf("bundle: want %s got %s", want, got)
 	}
 	ctx.O.BundleDir = ""
 

@@ -676,8 +676,9 @@ func cloneStep(repo, dir string) Step {
 
 // dbMigrateStep: схема БД → соответствие текущим entities.
 // Дамп в репо (install/newpostgresql.sql) отстаёт от кода (пример: repository.is_private);
-// миграций в платформе нет → mikro-orm schema:update. Толерантен к частичным ошибкам
-// (известный случай: DROP колонки с зависимым view — остальные операции применяются).
+// миграций в платформе нет → mikro-orm schema:update. Снимает legacy-дефолт
+// image.status (нативный enum из дампа) — иначе DROP TYPE падает 2BP01.
+// Толерантен к прочим частичным ошибкам (остальные операции применяются).
 func dbMigrateStep(coreDir string) StepFunc {
 	return StepFunc{
 		N: "db-migrate", D: []string{"db", "npm:core", "config:core"},
@@ -689,6 +690,20 @@ func dbMigrateStep(coreDir string) StepFunc {
 			return false, ""
 		},
 		RunF: func(c *Ctx, w io.Writer) error {
+			// Legacy-shim: дамп создаёт нативный enum image_status и дефолт
+			// image.status = 'not_exist'::image_status. Текущий entity описывает
+			// @Enum как text+CHECK, поэтому mikro-orm пытается DROP TYPE, но
+			// дефолт держит зависимость (2BP01). Снимаем дефолт — schema:update
+			// удалит тип и сам восстановит дефолт уже как text. Идемпотентно:
+			// если типа нет — no-op.
+			enumExists := fmt.Sprintf("sudo -u postgres psql -d %s -tAc \"SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace WHERE t.typtype='e' AND t.typname='image_status' AND n.nspname='public'\" | grep -q 1", c.O.DBName)
+			if outOK(c, enumExists) {
+				if err := c.Ex.Run(c, sys.RunOpts{
+					Cmd: fmt.Sprintf("sudo -u postgres psql -d %s -c \"ALTER TABLE image ALTER COLUMN status DROP DEFAULT\"", c.O.DBName),
+				}, w); err != nil {
+					fmt.Fprintf(w, "WARN: не удалось снять legacy-дефолт image.status: %v\n", err)
+				}
+			}
 			if err := c.Ex.Run(c, sys.RunOpts{
 				Cmd: "npx mikro-orm schema:update --run", Dir: coreDir, User: c.O.SvcUser,
 			}, w); err != nil {
