@@ -41,14 +41,46 @@ var newApp = defaultApp
 // screenFini — восстановление терминала (устанавливается фабрикой).
 var screenFini func()
 
+// appScreen — активный tcell-экран. Нужен для ширины терминала в итоговом экране
+// (перенос длинной команды «Для воспроизведения»). В тестах остаётся nil.
+var appScreen tcell.Screen
+
 func defaultApp() *tview.Application {
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		panic(err)
 	}
 	screen.SetCursorStyle(tcell.CursorStyleBlinkingBlock, tcell.ColorWhite, tcell.ColorBlack) // заметный курсор в полях ввода (как в opencode)
+	appScreen = screen
 	screenFini = func() { screen.Fini() }
 	return tview.NewApplication().SetScreen(screen)
+}
+
+// wrapCommand — переносит длинную команду по пробелам с shell-продолжением "\",
+// чтобы строка не уезжала за край терминала и оставалась копируемой.
+func wrapCommand(cmd string, width int) string {
+	if width < 24 {
+		width = 24
+	}
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return cmd
+	}
+	const prefix = "  "
+	var b strings.Builder
+	line := prefix + parts[0]
+	for _, p := range parts[1:] {
+		// +2 — резерв под " \" в конце строки при переносе.
+		if len([]rune(line))+1+len([]rune(p))+2 > width {
+			b.WriteString(line)
+			b.WriteString(" \\\n")
+			line = prefix + p
+			continue
+		}
+		line += " " + p
+	}
+	b.WriteString(line)
+	return b.String()
 }
 
 // probeURL — жив ли HTTP-endpoint (2с таймаут). Для автоопределения зеркала.
@@ -899,8 +931,14 @@ func showSummary(app *tview.Application, pages *tview.Pages, o *steps.Opts, logP
 	}
 	fmt.Fprintf(&sb, "\n Лог установки:           %s   (c — копия в буфер)\n", logPath)
 	if cmd := o.ReproductionCommand(); cmd != "megapolos-installer " {
+		width := 100
+		if appScreen != nil {
+			if tw, _ := appScreen.Size(); tw > 0 {
+				width = tw - 2
+			}
+		}
 		sb.WriteString("\n Для воспроизведения:\n")
-		fmt.Fprintf(&sb, " [yellow]%s[-]\n", cmd)
+		fmt.Fprintf(&sb, " [yellow]%s[-]\n", wrapCommand(cmd, width-1))
 	}
 	sb.WriteString("\n [gray]q / Esc — выход[-]")
 

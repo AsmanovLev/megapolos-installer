@@ -18,6 +18,28 @@ info()    { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 err()     { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 
+# wrap_cmd — переносит длинную команду по словам с shell-продолжением "\",
+# чтобы строка не уезжала за край терминала. Ширина: $COLUMNS / tput / 100.
+wrap_cmd() {
+  local cmd="$1" width="${COLUMNS:-}" line="  " word
+  if [[ -z "$width" ]] && command -v tput &>/dev/null; then
+    width="$(tput cols 2>/dev/null || true)"
+  fi
+  if [[ -z "$width" || "$width" -lt 24 ]]; then
+    width=100
+  fi
+  # shellcheck disable=SC2086  # намеренный word-splitting по словам команды
+  for word in $cmd; do
+    if (( ${#line} + 1 + ${#word} + 2 > width )); then
+      printf '%s \\\n' "$line"
+      line="  $word"
+    else
+      line="$line $word"
+    fi
+  done
+  printf '%s\n' "$line"
+}
+
 # Detect arch
 ARCH="$(uname -m)"
 case "$ARCH" in
@@ -129,7 +151,7 @@ echo ""
 if [[ $RESULT -eq 0 ]]; then
   info "Installation successful!"
   info "To reproduce this exact installation:"
-  echo "  $CMD"
+  wrap_cmd "$CMD"
   echo ""
 else
   err "Installation failed (exit $RESULT)"

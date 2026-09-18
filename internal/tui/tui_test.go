@@ -346,3 +346,27 @@ func TestCursorMarkerNavigation(t *testing.T) {
 		t.Fatalf("после ←×4 маркер должен быть над 'm', получили %q", string(mch))
 	}
 }
+
+func TestWrapCommand(t *testing.T) {
+	cmd := "megapolos-installer --standalone --dev-mode --base-domain=testing.local --host-ip=1.2.3.4 --node-root-password=*** --wipe --reset-db"
+	got := wrapCommand(cmd, 40)
+	for _, line := range strings.Split(got, "\n") {
+		if len([]rune(line)) > 40 {
+			t.Fatalf("строка длиннее лимита: %q", line)
+		}
+	}
+	// переносы — только shell-продолжения, слова не рвутся
+	if !strings.Contains(got, " \\\n") {
+		t.Fatalf("нет переносов с \\: %q", got)
+	}
+	joined := strings.ReplaceAll(got, " \\\n", " ")
+	joined = strings.ReplaceAll(joined, "\n", " ")
+	joined = strings.ReplaceAll(joined, "  ", " ")
+	if !strings.Contains(joined, "--base-domain=testing.local") {
+		t.Fatalf("аргумент потерян при переносе: %q", got)
+	}
+	// короткая команда не переносится
+	if short := wrapCommand("megapolos-installer --yes", 80); strings.Contains(short, "\n") {
+		t.Fatalf("короткая команда не должна переноситься: %q", short)
+	}
+}
