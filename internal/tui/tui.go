@@ -294,7 +294,7 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 				o.GUIDomain = "gui." + o.BaseDomain
 				o.APIURL = "https://" + o.BaseDomain + ":5104"
 			}
-			o.DevMode = false // прод-режим: реальные домены, self-signed CA от ядра
+			o.DevMode = true // standalone: self-signed CA от ядра, certbot не нужен
 		}
 		if o.GUIApp && o.GUIDomain == "" && o.BaseDomain != "" {
 			o.GUIDomain = "gui." + o.BaseDomain

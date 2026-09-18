@@ -658,7 +658,7 @@ func userStep() Step {
 // cloneStep: клонирование core/gui (параллельная пара).
 func cloneStep(repo, dir string) Step {
 	return StepFunc{
-		N: "clone:" + repo, D: []string{"base", "user"},
+		N: "clone:" + repo, D: []string{"wipe", "base", "user"},
 		DetectF: func(c *Ctx) (bool, string) {
 			// clone_or_pull инкрементален и быстр на зеркале — всегда выполняем,
 			// но если .git уже есть, это fetch+checkout (~2с)
@@ -887,6 +887,32 @@ func coreConfigStep(coreDir string) Step {
 	}
 }
 
+// coreCwdValid — существует ли рабочий каталог живого процесса core.
+// Если каталог установки удалили под работающим core, его cwd становится
+// «мертвым»: сам процесс жив, но любой дочерний (ansible и т.п.) падает с
+// getcwd: No such file or directory. В этом случае core нужно перезапустить.
+func coreCwdValid(c *Ctx) bool {
+	pid, _ := out(c, "systemctl show megapolos-core -p MainPID --value 2>/dev/null")
+	pid = strings.TrimSpace(pid)
+	if pid == "" || pid == "0" {
+		return false
+	}
+	procFi, err := os.Stat("/proc/" + pid + "/cwd")
+	if err != nil {
+		return false
+	}
+	target, err := os.Readlink("/proc/" + pid + "/cwd")
+	if err != nil {
+		return false
+	}
+	target = strings.TrimSuffix(target, " (deleted)")
+	pathFi, err := os.Stat(target)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(procFi, pathFi)
+}
+
 // systemdStep: юниты + nginx + (ре)старт.
 func systemdStep(coreDir, guiDir string, gui bool) Step {
 	deps := []string{"npm:core", "config:core"}
@@ -899,6 +925,10 @@ func systemdStep(coreDir, guiDir string, gui bool) Step {
 			unit, err1 := os.ReadFile("/etc/systemd/system/megapolos-core.service")
 			if err1 != nil || string(unit) != RenderCoreUnit(coreDir) ||
 				!outOK(c, "systemctl is-active -q megapolos-core") {
+				return false, ""
+			}
+			// cwd процесса core мог исчезнуть (удалили каталог) — нужен рестарт.
+			if !coreCwdValid(c) {
 				return false, ""
 			}
 			if gui {
@@ -984,7 +1014,7 @@ func guiTLSStep(coreDir, guiDir string) Step {
 // tokenStep: ждём API и забираем JWT из boot-лога.
 func tokenStep() Step {
 	return StepFunc{
-		N: "token", D: []string{"systemd"},
+		N: "token", D: []string{"systemd", "db-migrate"},
 		DetectF: func(c *Ctx) (bool, string) {
 			b, err := os.ReadFile("/root/megapolos-token.txt")
 			if err != nil {
@@ -1003,27 +1033,34 @@ func tokenStep() Step {
 		RunF: func(c *Ctx, w io.Writer) error {
 			fmt.Fprintln(w, "жду API на :5100 и забираю root-токен из журнала")
 			var token string
-			for i := 0; i < 60; i++ {
+			var lastErr string
+			for i := 0; i < 120; i++ {
 				select {
 				case <-c.Done():
 					return c.Err()
 				default:
 				}
+				// На каждой итерации перечитываем journal — core может перезапуститься
+				// с новым secret (wipe+resume), и тогда старый токен невалиден.
 				logs, _ := out(c, "journalctl -u megapolos-core -b --no-pager 2>/dev/null")
 				if m := tokenRe.FindAllStringSubmatch(logs, -1); len(m) > 0 {
-					token = m[len(m)-1][1] // последний токен текущего boot
-					break
-				}
-				time.Sleep(3 * time.Second)
-			}
-			if token == "" {
-				return fmt.Errorf("токен не найден за 3 минуты (journalctl -u megapolos-core)")
-			}
-			// JWT печатается ДО httpServer.listen(5100) — ждём пока порт реально поднимется.
-			fmt.Fprintln(w, "токен найден, жду пока API поднимется на :5100…")
-			for i := 0; i < 60; i++ {
-				if _, err := apiQuery(c, token, "{ __typename }", nil); err == nil {
-					break
+					newTok := m[len(m)-1][1]
+					if newTok != token {
+						token = newTok
+						fmt.Fprintf(w, "  токен обновлён: %s…\n", token[:20])
+					}
+					if _, err := apiQuery(c, token, "{ __typename }", nil); err == nil {
+						break
+					} else {
+						lastErr = err.Error()
+						if i > 0 && i%10 == 0 {
+							fmt.Fprintf(w, "  [%d/120] API ещё не готов: %s\n", i, lastErr)
+						}
+					}
+				} else {
+					if i > 0 && i%10 == 0 {
+						fmt.Fprintf(w, "  [%d/120] токен не найден в journal…\n", i)
+					}
 				}
 				// Проверяем, не упал ли core (crash-loop): если process exited — ранний выход.
 				if i > 0 && i%10 == 0 {
@@ -1034,10 +1071,10 @@ func tokenStep() Step {
 						return fmt.Errorf("megapolos-core не запущен (status: %s). Проверьте: journalctl -u megapolos-core -b", strings.TrimSpace(checkLogs))
 					}
 				}
-				if i == 59 {
+				if i == 119 {
 					lastLogs, _ := out(c, "journalctl -u megapolos-core -b --no-pager -n 30 2>/dev/null")
 					fmt.Fprintf(w, "\n=== последние строки журнала megapolos-core ===\n%s\n", lastLogs)
-					return fmt.Errorf("API не поднялся на :5100 за 3 минуты после обнаружения токена")
+					return fmt.Errorf("API не поднялся на :5100 за 6 минут (последняя ошибка: %s)", lastErr)
 				}
 				time.Sleep(3 * time.Second)
 			}

@@ -49,6 +49,37 @@ func serviceRunning(unit string) bool {
 	return cmd.Run() == nil
 }
 
+// coreCwdOK — существует ли рабочий каталог живого процесса megapolos-core.
+// Если каталог установки удалили под работающим core, cwd процесса «мертв»
+// (readlink → "... (deleted)") и дочерние процессы (ansible) падают; core
+// нужно перезапустить.
+func coreCwdOK() bool {
+	b, err := exec.Command("systemctl", "show", "megapolos-core", "-p", "MainPID", "--value").Output()
+	if err != nil {
+		return true // не смогли определить — не считаем проблемой
+	}
+	pid := strings.TrimSpace(string(b))
+	if pid == "" || pid == "0" {
+		return true
+	}
+	// Сравниваем inode фактического cwd процесса и текущего пути: если каталог
+	// удалили и создали заново, путь существует, но inode другой — cwd мёртв.
+	procFi, err := os.Stat("/proc/" + pid + "/cwd")
+	if err != nil {
+		return true // /proc недоступен — не наш случай
+	}
+	target, err := os.Readlink("/proc/" + pid + "/cwd")
+	if err != nil {
+		return true
+	}
+	target = strings.TrimSuffix(target, " (deleted)")
+	pathFi, err := os.Stat(target)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(procFi, pathFi)
+}
+
 // newDoctorCtx — Ctx с пустыми Opts для диагностических вызовов.
 func newDoctorCtx() *Ctx {
 	return &Ctx{
@@ -62,6 +93,7 @@ func newDoctorCtx() *Ctx {
 type DoctorReport struct {
 	AllStagesDone bool
 	FirstBroken   string // ключ первой сломанной стадии (маркер есть, артефакта нет)
+	APIHealthy    bool   // API отвечает и токен валиден (иначе --resume обязан перевыпустить токен)
 	Recommendation string
 }
 
@@ -81,7 +113,8 @@ func Doctor(w io.Writer) (DoctorReport, int) {
 	check(w, "docker daemon", serviceRunning("docker"))
 	check(w, "postgresql", serviceRunning("postgresql"))
 	check(w, "docker: nginx", dockerContainerRunning("nginx"))
-	check(w, "docker: registry", dockerContainerRunning("registry"))
+	check(w, "docker: registry", dockerContainerRunning("docker-registry"))
+	check(w, "gui (port 3000)", portOpen("127.0.0.1:3000"))
 	fmt.Fprintln(w)
 
 	// 2. Артефакты стадий
@@ -131,17 +164,18 @@ func Doctor(w io.Writer) (DoctorReport, int) {
 	// 5. API / нода
 	fmt.Fprintln(w, "[5] Megapolos Core API")
 	apiState := doctorAPIState(c)
+	report.APIHealthy = !strings.HasPrefix(apiState, "✗") && !strings.HasPrefix(apiState, "—")
 	fmt.Fprintf(w, "  %s\n", apiState)
 	fmt.Fprintln(w)
 
 	// 6. Рекомендация
 	fmt.Fprintln(w, "[6] Рекомендация")
-	rec := doctorRecommend(c)
+	rec := doctorRecommend(c, report.APIHealthy)
 	report.Recommendation = rec
 	fmt.Fprintln(w, rec)
 	fmt.Fprintln(w)
 
-	problems := countProblems(c)
+	problems := countProblems(c, report.APIHealthy)
 	if problems > 0 {
 		fmt.Fprintf(w, "Найдено проблем: %d\n", problems)
 		return report, 1
@@ -160,7 +194,7 @@ func doctorAPIState(c *Ctx) string {
 		return "— токен не найден в /root/megapolos-token.txt"
 	}
 	c.O.Token = token
-	data, err := apiQuery(c, token, "{ getAppVersion }", nil)
+	data, err := apiQuery(c, token, "{ getAllAppVersion { id version buildNumber } }", nil)
 	if err != nil {
 		return fmt.Sprintf("✗ API не отвечает: %v", err)
 	}
@@ -168,10 +202,34 @@ func doctorAPIState(c *Ctx) string {
 }
 
 // doctorRecommend — текстовая рекомендация.
-func doctorRecommend(c *Ctx) string {
+func doctorRecommend(c *Ctx, apiHealthy bool) string {
 	init := detectMarker(stageInit) && stageArtifactOK(c, stageInit)
 	prepare := detectMarker(stagePrepareForCore) && stageArtifactOK(c, stagePrepareForCore)
 	registry := detectMarker(stageInstallRegistry) && stageArtifactOK(c, stageInstallRegistry)
+
+	if !serviceRunning("megapolos-core") {
+		return "megapolos-core не запущен:\n  sudo systemctl start megapolos-core\n" +
+			"Если упал: journalctl -u megapolos-core -b -n 50"
+	}
+	if !portOpen("127.0.0.1:5100") {
+		return "API core не слушает порт 5100 (сервис запущен, но порт закрыт):\n" +
+			"  journalctl -u megapolos-core -b -n 50"
+	}
+	if !apiHealthy {
+		return "Токен недействителен или API не отвечает. Перевыпустить токен:\n" +
+			"  sudo installer --resume\n" +
+			"(шаг token перечитает JWT из журнала megapolos-core и перезапишет /root/megapolos-token.txt)"
+	}
+	if _, err := os.Stat("/opt/megapolos"); err != nil {
+		return "Каталог установки /opt/megapolos отсутствует. Восстановить:\n" +
+			"  sudo installer --resume\n" +
+			"(повторно склонирует core, восстановит config.json с прежними секретами из /var/lib/megapolos/installer.cfg)"
+	}
+	if !coreCwdOK() {
+		return "Рабочий каталог процесса megapolos-core удалён (cwd = deleted). Перезапустить core:\n" +
+			"  sudo installer --resume\n" +
+			"(шаг systemd перезапустит сервис из восстановленного каталога)"
+	}
 
 	switch {
 	case init && prepare && registry:
@@ -190,14 +248,40 @@ func doctorRecommend(c *Ctx) string {
 }
 
 // countProblems — сколько критичных проблем найдено.
-func countProblems(c *Ctx) int {
+func countProblems(c *Ctx, apiHealthy bool) int {
 	n := 0
 	for _, s := range nodeStages() {
 		if detectMarker(s.Key) && !stageArtifactOK(c, s.Key) {
 			n++
 		}
 	}
+	if !apiHealthy {
+		n++
+	}
+	// Каталог установки отсутствует (удалён вручную) — API может ещё
+	// отвечать из памяти процесса, но после рестарта core не поднимется.
+	if _, err := os.Stat("/opt/megapolos"); err != nil {
+		n++
+	}
+	if !coreCwdOK() {
+		n++
+	}
 	if !serviceRunning("megapolos-core") {
+		n++
+	}
+	if !dockerContainerRunning("nginx") {
+		n++
+	}
+	if !dockerContainerRunning("docker-registry") {
+		n++
+	}
+	if !portOpen("127.0.0.1:5100") {
+		n++
+	}
+	if !portOpen("127.0.0.1:5104") {
+		n++
+	}
+	if !portOpen("127.0.0.1:3000") {
 		n++
 	}
 	return n
@@ -218,66 +302,72 @@ func ShowInfo(w io.Writer) int {
 	c.O.Token = token
 	fmt.Fprintln(w, "=== --info: последние ansible-логи платформы ===")
 
-	// Берём 10 свежих логов (getAllLogCommit: в ядре он доступен с лимитом).
-	// Затем для каждого качаем getLogCommit(id) { log } (хвост ansible-вывода).
+	// Берём 10 свежих логов (getAllLog: без лимита — берём все).
+	// Затем для каждого качаем getLog(id) { text } (хвост ansible-вывода).
 	query := `{
-		getAllLogCommit(limit: 10) {
+		getAllLog {
 			id
 			name
 			type
 			nodeId
 			nodeName
-			creationDate
+			createDate
 			isClosed
 		}
 	}`
 	data, err := apiQuery(c, token, query, nil)
 	if err != nil {
-		fmt.Fprintf(w, "✗ getAllLogCommit: %v\n", err)
+		fmt.Fprintf(w, "✗ getAllLog: %v\n", err)
 		return 1
 	}
 
 	var parsed struct {
-		GetAllLogCommit []struct {
+		GetAllLog []struct {
 			ID           string `json:"id"`
 			Name         string `json:"name"`
 			Type         string `json:"type"`
 			NodeName     string `json:"nodeName"`
-			CreationDate string `json:"creationDate"`
+			CreateDate   string `json:"createDate"`
 			IsClosed     bool   `json:"isClosed"`
-		} `json:"getAllLogCommit"`
+		} `json:"getAllLog"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		fmt.Fprintf(w, "✗ parse: %v\n", err)
 		return 1
 	}
 
-	if len(parsed.GetAllLogCommit) == 0 {
+	if len(parsed.GetAllLog) == 0 {
 		fmt.Fprintln(w, "нет логов (стадии ansible ещё не запускались)")
 		return 0
 	}
 
+	// Показываем только 10 самых свежих
+	logs := parsed.GetAllLog
+	if len(logs) > 10 {
+		logs = logs[len(logs)-10:]
+	}
+
 	fmt.Fprintf(w, "Найдено логов: %d (свежие первые; вывод обрезан до 80 последних строк)\n\n",
-		len(parsed.GetAllLogCommit))
-	for _, l := range parsed.GetAllLogCommit {
+		len(parsed.GetAllLog))
+	for _, l := range logs {
 		fmt.Fprintf(w, "--- %s | %s | node=%s | %s | closed=%v ---\n",
-			shortID(l.ID), l.Type, l.NodeName, l.CreationDate, l.IsClosed)
+			shortID(l.ID), l.Type, l.NodeName, l.CreateDate, l.IsClosed)
 		logData, err := apiQuery(c, token,
-			fmt.Sprintf(`{ getLogCommit(id: "%s") { log } }`, l.ID), nil)
+			fmt.Sprintf(`{ getLog(id: "%s") { text } }`, l.ID), nil)
 		if err != nil {
-			fmt.Fprintf(w, "(getLogCommit: %v)\n", err)
+			fmt.Fprintf(w, "(getLog: %v)\n", err)
 			continue
 		}
 		var logWrapped struct {
-			GetLogCommit struct {
-				Log string `json:"log"`
-			} `json:"getLogCommit"`
+			GetLog struct {
+				Text string `json:"text"`
+			} `json:"getLog"`
 		}
 		if err := json.Unmarshal(logData, &logWrapped); err != nil {
 			fmt.Fprintf(w, "(parse log: %v)\n", err)
 			continue
 		}
-		log := logWrapped.GetLogCommit.Log
+		log := logWrapped.GetLog.Text
 		lines := strings.Split(log, "\n")
 		if len(lines) > 80 {
 			fmt.Fprintf(w, "... (показаны последние 60 из %d строк)\n", len(lines))
@@ -322,6 +412,16 @@ func dockerContainerRunning(name string) bool {
 	return false
 }
 
+func portOpen(addr string) bool {
+	parts := strings.SplitN(addr, ":", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	cmd := exec.Command("bash", "-c",
+		fmt.Sprintf("timeout 2 bash -c 'echo > /dev/tcp/%s/%s' 2>/dev/null", parts[0], parts[1]))
+	return cmd.Run() == nil
+}
+
 func check(w io.Writer, name string, ok bool) {
 	if ok {
 		fmt.Fprintf(w, "  ✓ %s\n", name)
@@ -339,8 +439,13 @@ func checkPath(w io.Writer, name, path string) {
 }
 
 func checkPort(w io.Writer, name, addr string) {
+	parts := strings.SplitN(addr, ":", 2)
+	if len(parts) != 2 {
+		fmt.Fprintf(w, "  ✗ %s  (bad addr: %s)\n", name, addr)
+		return
+	}
 	cmd := exec.Command("bash", "-c",
-		fmt.Sprintf("timeout 2 bash -c 'echo > /dev/tcp/%s' 2>/dev/null && echo open || echo closed", addr))
+		fmt.Sprintf("timeout 2 bash -c 'echo > /dev/tcp/%s/%s' 2>/dev/null && echo open || echo closed", parts[0], parts[1]))
 	out, err := cmd.Output()
 	if err != nil {
 		fmt.Fprintf(w, "  ✗ %s  (%s)\n", name, addr)

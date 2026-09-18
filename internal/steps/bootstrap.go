@@ -306,7 +306,9 @@ func nodeChain(c *Ctx, w io.Writer, nodeID string) error {
 	for _, stage := range stages {
 		markerExists := sys.FileExists(c, c.Ex, stageMarkerPath(stage.Key))
 		artifactOK := stage.HasArtifact(c)
-		if artifactOK && (markerExists || c.O.Resume) {
+		// --retry-stage: явный запрос повторить стадию — не пропускаем даже
+		// при готовом артефакте/маркере.
+		if c.O.RetryStage == "" && artifactOK && (markerExists || c.O.Resume) {
 			fmt.Fprintf(w, "%s: артефакт на месте — пропускаю%s\n",
 				stage.Label, func() string { if markerExists { return " (по маркеру)" }; return " (--resume)" }())
 			writeStageMarker(c, stage.Key)
@@ -511,7 +513,8 @@ func deployGUIApp(c *Ctx, w io.Writer, nodeID string) error {
 		map[string]any{"imageId": imageID}); err != nil {
 		return fmt.Errorf("buildImage: %w", err)
 	}
-	for i := 0; i < 120; i++ {
+	lastStatus := ""
+	for i := 0; i < 360; i++ { // до 30 минут: на слабых машинах npm-сборка идёт долго
 		data, err := apiQuery(c, c.O.Token, "query($id: String!) { getImage(id: $id) { status } }",
 			map[string]any{"id": imageID})
 		if err == nil {
@@ -520,13 +523,23 @@ func deployGUIApp(c *Ctx, w io.Writer, nodeID string) error {
 					Status string `json:"status"`
 				} `json:"getImage"`
 			}
-			if json.Unmarshal(data, &st) == nil && st.GetImage.Status == "Built" {
-				goto built
+			if json.Unmarshal(data, &st) == nil {
+				s := st.GetImage.Status
+				if s != lastStatus {
+					lastStatus = s
+					fmt.Fprintf(w, "  статус сборки: %s\n", s)
+				}
+				if s == "Built" {
+					goto built
+				}
+				if s == "Error" {
+					return fmt.Errorf("сборка образа GUI завершилась ошибкой (status=Error); логи: journalctl -u megapolos-core")
+				}
 			}
 		}
 		time.Sleep(5 * time.Second)
 	}
-	return fmt.Errorf("образ GUI не собрался за 10 минут")
+	return fmt.Errorf("образ GUI не собрался за 30 минут (последний статус: %s)", lastStatus)
 built:
 
 	conf, err := gql(c, w, "mutation($appId: String!, $configurationData: ConfigurationDataInput!) { createConfiguration(appId: $appId, configurationData: $configurationData) { id } }",
@@ -615,6 +628,11 @@ func bootstrapStep() Step {
 		N: "bootstrap",
 		D: []string{"token", "swarm", "ansible", "docker-images"},
 		DetectF: func(c *Ctx) (bool, string) {
+			// --retry-stage: форсируем запуск даже при готовом маркере,
+			// иначе запрошенная стадия никогда не перезапустится.
+			if c.O.RetryStage != "" {
+				return false, ""
+			}
 			mark := mode(c.O) + "|graphql|localhost"
 			b, err := os.ReadFile(marker(c.O))
 			if err == nil && string(b) == mark {
@@ -643,6 +661,13 @@ func bootstrapStep() Step {
 			}
 			if err := ensureRegistry(c, w); err != nil {
 				return err
+			}
+
+			// --retry-stage: выполняем ТОЛЬКО запрошенную стадию (nodeChain
+			// отфильтрует по RetryStage) и выходим — не трогаем GUI, dbmsChain
+			// и bootstrap-маркер, чтобы не переустанавливать всё целиком.
+			if c.O.RetryStage != "" {
+				return nodeChain(c, w, nodeID)
 			}
 
 			// цепочка ноды (ansible, долго) ∥ DBMS/preset (БД-записи, быстро)

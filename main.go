@@ -161,6 +161,11 @@ func saveInstallerCfg(opts *steps.Opts) {
 		NodeRootPass   string
 		Swap           string
 		HostIP         string
+		// Секреты: нужны, чтобы восстановиться после потери config.json
+		// (например удалили /opt/megapolos) при живой БД — иначе новый
+		// пароль роли ≠ пароль в БД → 28P01.
+		Secret string
+		DBPass string
 	}{
 		Source: opts.Source, CoreRef: opts.CoreRef, GUIRef: opts.GUIRef,
 		APIURL: opts.APIURL, GUI: opts.GUI, GUIApp: opts.GUIApp,
@@ -170,9 +175,27 @@ func saveInstallerCfg(opts *steps.Opts) {
 		DBName: opts.DBName, DBUser: opts.DBUser,
 		InstallDir: opts.InstallDir, NodeRootPass: opts.NodeRootPassword,
 		Swap: opts.Swap, HostIP: opts.HostIP,
+		Secret: opts.Secret, DBPass: opts.DBPass,
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
-	_ = os.WriteFile(installerCfgPath, b, 0o644)
+	_ = os.WriteFile(installerCfgPath, b, 0o600)
+}
+
+// loadInstallerSecrets — secret и пароль БД из сохранённого installer.cfg.
+// Нужны как fallback, когда config.json потерян, а БД/роль ещё живы.
+func loadInstallerSecrets() (secret, dbPass string) {
+	b, err := os.ReadFile(installerCfgPath)
+	if err != nil {
+		return "", ""
+	}
+	var cfg struct {
+		Secret string
+		DBPass string
+	}
+	if json.Unmarshal(b, &cfg) != nil {
+		return "", ""
+	}
+	return cfg.Secret, cfg.DBPass
 }
 
 // loadInstallerCfg — загружает ранее сохранённый конфиг (для --resume).
@@ -508,9 +531,12 @@ resume       = flag.Bool("resume", false, "продолжить установк
 	// подставляем --retry-stage, чтобы не переустанавливать всё с нуля.
 	if *resume && *retryStage == "" {
 		report, code := steps.Doctor(os.Stderr)
-		if code == 0 && report.AllStagesDone {
+		if code == 0 && report.AllStagesDone && report.APIHealthy {
 			fmt.Fprintln(os.Stderr, "установка завершена — нечего продолжать")
 			os.Exit(0)
+		}
+		if !report.APIHealthy {
+			fmt.Fprintf(os.Stderr, "\n>>> токен/API нездоров — продолжаю установку (шаг token перевыпустит токен)\n\n")
 		}
 		if report.FirstBroken != "" {
 			fmt.Fprintf(os.Stderr, "\n>>> авто-выбор: --retry-stage=%s\n\n", report.FirstBroken)
@@ -596,6 +622,19 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		}
 	}
 	secret, dbPass := existingConfig(filepath.Join(*dir, "megapolos-core"))
+	// Recovery без wipe: config.json мог быть потерян (удалили каталог), но
+	// БД/роль живы. Берём секреты из installer.cfg, иначе новый пароль роли
+	// не совпадёт с БД → 28P01. При --wipe БД пересоздаётся — можно свежие.
+	if (secret == "" || dbPass == "") && !*wipe {
+		if s2, p2 := loadInstallerSecrets(); s2 != "" && p2 != "" {
+			if secret == "" {
+				secret = s2
+			}
+			if dbPass == "" {
+				dbPass = p2
+			}
+		}
+	}
 	if secret == "" {
 		secret = randomHex(32)
 	}
@@ -663,11 +702,14 @@ resume       = flag.Bool("resume", false, "продолжить установк
 	}
 	if opts.Standalone {
 		// Независимый деплой: 1 нода, GUI как приложение платформы,
-		// домены — из base-domain, прод-режим (без devMode).
-		opts.GUI = true
-		opts.GUIApp = true
+		// домены — из base-domain, self-signed CA (devMode=true, certbot не нужен).
+		// Но явный --gui=false / --gui-app=false (например, слабая машина) важнее.
+		if !explicit["gui"] && !explicit["gui-app"] {
+			opts.GUI = true
+			opts.GUIApp = true
+		}
 		opts.AddSelfNode = true
-		opts.DevMode = false
+		opts.DevMode = true
 		if opts.BaseDomain != "" {
 			opts.GUIDomain = "gui." + opts.BaseDomain
 			if opts.APIURL == "" {
