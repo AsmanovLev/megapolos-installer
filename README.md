@@ -13,7 +13,7 @@ PREPARE FOR CORE → INSTALL REGISTRY → сборка образа GUI → ин
 Онлайн (релиз `slim-latest` на GitHub):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AsmanovLev/megapolos-installer/main/install.sh | \
+curl -fsSL https://github.com/AsmanovLev/megapolos-installer/releases/latest/download/install.sh | \
   sudo bash -s -- --standalone --base-domain=example.local
 ```
 
