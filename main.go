@@ -511,6 +511,15 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		}
 	}
 	autoResume := os.Getenv("MEGAPOLOS_AUTO_RESUME") == "1"
+	// Сколько флагов реально передал юзер (auto-resume от install.sh не считаем).
+	// Нужно, чтобы при выборе «переустановить с нуля» без флагов открыть мастер.
+	userFlags := 0
+	for name := range explicit {
+		if name == "resume" {
+			continue
+		}
+		userFlags++
+	}
 	// Показываем интерактивный выбор если:
 	// - есть следы установки И
 	// - не в специальных режимах (--doctor, --info...) И
@@ -531,8 +540,17 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		case "wipe":
 			*wipe = true
 			*resetDB = true
-			*yes = true
-			*noTUI = true
+			*resume = false
+			// Без пользовательских флагов открываем мастер настроек (домены,
+			// режим, GUI), а не идём молча с дефолтами. Если флаги передавали —
+			// уважаем их и переустанавливаем headless.
+			if userFlags == 0 {
+				*yes = false
+				*noTUI = false
+			} else {
+				*yes = true
+				*noTUI = true
+			}
 		default:
 			fmt.Println("Отменено.")
 			os.Exit(0)
