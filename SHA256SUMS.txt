@@ -1,2 +1,2 @@
-de247b73022a1ebb1c017d5d8a666dd494302918c0617d02535afe5247980c28  megapolos-installer
+6040f735db36b66d9d1feef6a23a1d1cb2ba49ecd1b144d01bc4ad34ba12b4ae  megapolos-installer
 6236fb9165d89dccb607fd5b9aebc4ecee5bb92ef2cc665d5034824dad472f63  install.sh
