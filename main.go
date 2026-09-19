@@ -422,6 +422,22 @@ resume       = flag.Bool("resume", false, "продолжить установк
 	)
 	flag.Parse()
 
+	// Go flag останавливается на первом не-флаге: если юзер случайно передал
+	// первым аргументом сам бинарник (напр. `install.sh | bash -s -- megapolos-installer --wipe`),
+	// все последующие --флаги молча игнорируются и установка идёт с дефолтами.
+	// Лучше упасть с понятной ошибкой, чем тихо поставить не то.
+	if rest := flag.Args(); len(rest) > 0 {
+		fmt.Fprintf(os.Stderr, "FAIL: лишние аргументы без флага: %v\n", rest)
+		fmt.Fprintln(os.Stderr, "Похоже, первым аргументом передан сам бинарник — тогда все --флаги после него игнорируются.")
+		fmt.Fprintln(os.Stderr, "Правильно:  curl -fsSL <install.sh> | bash -s -- --standalone --base-domain=example.com ...")
+		os.Exit(2)
+	}
+	if strings.HasPrefix(*selfNode, "-") {
+		fmt.Fprintf(os.Stderr, "FAIL: --self-node получил значение флага %q — пропущено значение.\n", *selfNode)
+		fmt.Fprintln(os.Stderr, "Строковый флаг без '=' съедает следующий аргумент: используй --self-node=true|false|auto.")
+		os.Exit(2)
+	}
+
 	// Если есть сохранённый конфиг (от прошлого запуска) и юзер не передал
 	// соответствующий флаг явно — подставляем значения из файла. Это критично
 	// для --resume / curl|bash без флагов: иначе base-domain сбросится на
