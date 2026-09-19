@@ -1,31 +1,86 @@
 # megapolos-installer
 
 Установщик Megapolos (megapolos-core + megapolos-gui) — один статический Go-бинарь
-с TUI (tview) и headless-режимом. Работает онлайн (gitlab/кэши хоста) и полностью
-оффлайн (squashfs-бандл).
+с TUI (tview) и headless-режимом. Работает онлайн (GitHub-релиз `slim-latest` или
+gitlab-репо/кэши хоста) и полностью оффлайн (squashfs-бандл).
+
+Оркестрация установки — нативная: установщик дёргает GraphQL ядра (нода → INIT →
+PREPARE FOR CORE → INSTALL REGISTRY → сборка образа GUI → инстанс), без вызова
+`ts-node install.ts`.
 
 ## Быстрый старт
 
-Онлайн (внутри целевой VM/машины):
+Онлайн (релиз `slim-latest` на GitHub):
 
 ```bash
-curl -fsSL http://<host>:8000/install/bootstrap.sh | sudo bash   # скачает бандл, смонтирует, запустит
+curl -fsSL https://raw.githubusercontent.com/AsmanovLev/megapolos-installer/main/install.sh | \
+  sudo bash -s -- --standalone --base-domain=example.local
 ```
 
-Из смонтированного бандла:
+> Флаги передаются **только после `-s --`**. Лишний позиционный аргумент (например,
+> имя бинаря `megapolos-installer`) недопустим: Go `flag` не разбирает флаги после
+> первого не-флага, установщик завершится с ошибкой. Строковые флаги (`--swap`,
+> `--self-node`) указывать через `=` (`--swap=true`), иначе съедят следующий аргумент.
+
+Из смонтированного оффлайн-бандла:
 
 ```bash
 sudo mount -o ro,loop megapolos-bundle.sqfs /mnt/megapolos-bundle
-sudo /mnt/megapolos-bundle/installer            # TUI
+sudo /mnt/megapolos-bundle/installer                  # TUI
 sudo /mnt/megapolos-bundle/installer --no-tui --yes   # headless
 ```
 
 ## Режимы
 
 - TUI-визард (по умолчанию при наличии терминала): источник репо, ветки/коммиты,
-  API URL, devMode, базовый домен, GUI on/off, self-node.
+  API URL, devMode, базовый домен, GUI on/off, standalone, self-node.
 - Headless: всё через флаги (`megapolos-installer --help`), env `MEGAPOLOS_*`.
 - Идемпотентен: повторный прогон пропускает сделанное (с причинами skip).
+- При обнаружении существующей установки — интерактивный выбор:
+  1) `--resume`, 2) поменять настройки и восстановить, 3) переустановить с нуля.
+  Выбор «3» без переданных флагов открывает визард (с уже отмеченными `--wipe`
+  и `--reset-db`).
+
+![Мастер установки (TUI)](docs/tui.png)
+
+## Ключевые флаги
+
+- `--standalone` — независимый деплой: 1 нода, GUI как приложение платформы,
+  домены из `--base-domain`, автоматически включает `--dev-mode` (self-signed
+  Megapolos Root CA, certbot/Let's Encrypt не запускается).
+- `--api-url=https://<host>:5104` — адрес API для GUI (попадает в
+  `/config/config.json` как `MEGAPOLOS_SERVER`). Должен быть HTTPS и **покрыт
+  сертификатом**. В standalone по умолчанию `https://<base-domain>:5104`.
+- `--base-domain` — базовый домен (`gui.<base-domain>`, API `https://<base>:5104`).
+- `--gui-domain`, `--gui`, `--gui-app`, `--gui-tls` — домен/режим GUI.
+- `--wipe` — удалить предыдущую установку; `--reset-db` — дополнительно БД и роль.
+  Полный сброс запомненных настроек — `sudo rm -rf /var/lib/megapolos`.
+- `--resume` — долечить; `--retry-stage=<init|prepare-for-core|install-registry>` —
+  повторить одну стадию.
+- `--doctor` — диагностика; `--info` — последние ansible-логи.
+- `--swap=auto|force|skip`, `--self-node=true|false|auto` — строковые, через `=`.
+- `--yes --no-tui` — headless без вопросов.
+
+Настройки прогона (включая секреты для восстановления) сохраняются в
+`/var/lib/megapolos/installer.cfg` и подхватываются при `--resume`; явные
+CLI-флаги имеют приоритет.
+
+## Сертификаты и API
+
+- В `--dev-mode` (и в `--standalone`) сертификаты подписывает единый Megapolos Root CA.
+  Сертификат ноды на `:5104` покрывает `localhost`, `*.megapolos.localhost` и
+  `127.0.0.1`; для реального домена нужен либо `api.megapolos.localhost`, либо
+  домен, добавленный в SAN ноды.
+- CA скачивается с ядра: `GET /api/ca/download`
+  (`https://<api-host>:5104/api/ca/download` или без TLS-предупреждения —
+  `http://<ip>:5100/api/ca/download`). Установщик печатает ссылку и пишет её в
+  `/etc/motd`.
+- Импорт CA в доверенные:
+  - Debian/Ubuntu: `sudo cp megapolos-root-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates`
+  - RHEL/Fedora: `sudo cp megapolos-root-ca.crt /etc/pki/ca-trust/source/anchors/ && sudo update-ca-trust`
+  - Windows: `certmgr.msc` → «Доверенные корневые центры сертификации» → Импорт.
+  - macOS: Keychain Access → System → Always Trust.
+  - Firefox хранит собственный стор сертификатов.
 
 ## Сборка
 
@@ -36,7 +91,14 @@ podman run --rm -v .:/src:Z -v ./vm/cache/gomod:/go/pkg/mod:Z -w /src \
   golang:1.24-bookworm bash -c 'CGO_ENABLED=0 go build -o megapolos-installer .'
 ```
 
-Тесты: добавь `go vet ./... && go test ./...` перед build.
+Релизная сборка (amd64, stripped):
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  -o megapolos-installer .
+```
+
+Тесты: `CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test ./...`.
 
 ## Оффлайн-бандл (squashfs)
 
@@ -68,18 +130,20 @@ podman run --rm -v .:/src:Z -v ./vm/cache/gomod:/go/pkg/mod:Z -w /src \
    sudo mount -o ro,loop megapolos-bundle.sqfs /mnt/megapolos-bundle
    sudo /mnt/megapolos-bundle/installer                 # TUI
    # или без вопросов:
-   sudo /mnt/megapolos-bundle/installer --no-tui --yes
+   sudo /mnt/megapolos-bundle/installer --no-tui --yes --standalone --base-domain=<домен>
    ```
-3. Через ~5 минут: GUI http://<ip>:8080 (TLS :4443), API :5100, токен в
+3. GUI: `https://gui.<домен>/`, API `https://<домен>:5104`, токен в
    `/root/megapolos-token.txt`.
 
-Требования к целевой: **Ubuntu 24.04 amd64**, root, systemd, ≥6G RAM, 20G диска.
+Требования к целевой: **Ubuntu 22.04/24.04 amd64**, root, systemd.
+- с GUI: ≥ 4 ГБ RAM, ≥ 15 ГБ диска;
+- без GUI (`--gui=false`): ≥ 2 ГБ RAM, ≥ 10 ГБ.
 
 После установки:
-- **DNS**: сделать wildcard-запись `*.megapolos.local → <ip>` во внутреннем DNS
-  (или свой домен: `--base-domain`). Без DNS приложения доступны только по IP:порт.
-- **CA**: сертификаты self-signed от Megapolos Root CA — скачать с
-  `http://<ip>:5100/api/ca/download` и импортировать в доверенные на клиентах.
+- **DNS**: wildcard-запись `*.<домен> → <ip>` во внутреннем DNS (или `/etc/hosts`
+  на клиентах). Без DNS домены не резолвятся.
+- **CA**: сертификаты self-signed от Megapolos Root CA — скачать (см. «Сертификаты
+  и API») и импортировать в доверенные на клиентах.
 - **Образы приложений**: базовые (`node:18`, `busybox:1.35`, `nginx`, `registry:2`)
   уже в бандле — сборка приложений в контуре работает.
 
@@ -93,25 +157,17 @@ podman run --rm -v .:/src:Z -v ./vm/cache/gomod:/go/pkg/mod:Z -w /src \
 Исходники core/gui ожидаются в соседнем каталоге `../megapolos/{megapolos-core,megapolos-gui}`
 (нужны host-services для git-зеркала и make-bundle для бандла).
 
-## Почему установщик вызывает `install.ts`, а не портит его в Go
+## Почему оркестрация нативная (GraphQL), а не вызов install.ts
 
-Возникал вопрос: «почему бы всё не перевести в монолит на Go — один статический
-бинарник быстрее». Аргументы против порта (решенo: вызываем `npm run bootstrap`):
+Ранее bootstrap выполнял `ts-node install.ts` из megapolos-core. Сейчас установщик
+повторяет ту же цепочку напрямую через GraphQL ядра (`internal/steps/bootstrap.go`):
+нода (get-or-create) → `init` → `prepareForCore` → `installRegistry` → сборка образа
+GUI (poll статуса) → `createConfiguratedInstance`.
 
-1. **Время install.ts — это не язык.** Старт ts-node ~2 сек; остальные минуты —
-   ansible-прогоны и docker build (I/O и сеть). Go их не ускорит. А Node.js в
-   системе всё равно обязателен: ядро — Node-приложение.
-2. **install.ts — это не скрипт, а внутренности платформы.** Он дергает
-   NodeRepo/AppRepo/ImageRepo поверх Mikro-ORM, рендерит ansible-шаблоны,
-   собирает образа, раздаёт CA. Порт = переписать кусок megapolos-core
-   (тысячи строк) и потом **вечно догонять upstream** (файл правится каждые
-   несколько недель; семантическое расхождение вылезет в рантайме на нодах).
-3. **Контракт вызова узкий и стабильный**: env `MEGAPOLOS_NODE_*`,
-   `MEGAPOLOS_BOOTSTRAP_APP_*`. Его и держим. Порт логики — широкий и живой.
-4. Установщик остаётся монолитом там, где это даёт выигрыш: детект пакетов,
-   оффлайн-бандл, идемпотентность, TUI — это наш код и наш контроль.
-
-Когда монолит стал бы оправдан: если платформа опубликует стабильный API
-bootstrap'а (GraphQL-мутации init/prepare/installRegistry покрывают всё) ИЛИ
-если upstream бросит install.ts. Тогда — GraphQL-оркестрация из Go без ts-node.
-
+1. **Node.js в системе всё равно обязателен** — ядро Node-приложение; экономии нет.
+2. **Контракт GraphQL стабильнее внутренностей install.ts**: держим узкий набор
+   мутаций/запросов, а не копию тысяч строк, которую upstream правит регулярно.
+3. **Меньше расхождений в рантайме**: get-or-create, ожидание статусов ноды и
+   сборки образа явно реализованы и логируются в Go.
+4. Монолит оправдан там, где это наш код: детект пакетов, оффлайн-бандл,
+   идемпотентность, TUI.
