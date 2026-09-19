@@ -271,16 +271,28 @@ func All(o *Opts) []Step {
 					shTolerant(c, w, "rm -rf "+c.O.InstallDir)
 				}
 
-				// 5. Чистим кэш токенов/секретов (пересоздадутся)
+				// 5. Сбрасываем маркеры стадий — вайп = прогнать стадии заново.
+				shTolerant(c, w, "rm -f /var/lib/megapolos/stage-*.done")
+
+				// При полном сбросе (--reset-db) убираем и память установщика
+				// целиком: installer.cfg с доменами/секретами. Без --reset-db
+				// cfg оставляем — секреты нужны на случай живой БД (иначе
+				// новый пароль роли ≠ БД → 28P01). Домены при вайпе и так
+				// сбрасываются в дефолт отдельно (см. main.go).
+				if c.O.ResetDB {
+					shTolerant(c, w, "rm -rf /var/lib/megapolos")
+				}
+
+				// 6. Чистим кэш токенов/секретов (пересоздадутся)
 				shTolerant(c, w, "rm -f /root/megapolos-token.txt")
 
-				// 6. Убеждаемся, что postgresql работает
+				// 7. Убеждаемся, что postgresql работает
 				if out, err := exec.Command("systemctl", "enable", "--now", "postgresql").CombinedOutput(); err != nil {
 					fmt.Fprintf(w, "WARN: postgresql не запущен: %s\n%s\n", err, string(out))
 					fmt.Fprintf(w, "Установите вручную: apt install postgresql-%d\n", c.O.PgMajor)
 				}
 
-				// 7. Сброс БД (если включён)
+				// 8. Сброс БД (если включён)
 				if c.O.ResetDB {
 					fmt.Fprintln(w, "=== Сброс БД ===")
 					dbName, dbUser := c.O.DBName, c.O.DBUser

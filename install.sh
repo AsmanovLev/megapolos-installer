@@ -7,8 +7,12 @@
 # =============================================================================
 set -euo pipefail
 
+# RESULT используется после запуска установщика; инициализируем, чтобы при
+# любом сбое не получить «RESULT: unbound variable» под set -u.
+RESULT=0
+
 REPO="AsmanovLev/megapolos-installer"
-INSTALLER_URL_BASE="https://github.com/${REPO}/releases/download"
+INSTALLER_URL_BASE="${MEGAPOLOS_INSTALLER_URL_BASE:-https://github.com/${REPO}/releases/download}"
 LATEST_URL="https://api.github.com/repos/${REPO}/releases/latest"
 
 # Colors
@@ -63,7 +67,7 @@ info "Arch: $ARCH_TAG"
 
 # Fetch latest release tag
 info "Fetching latest release info..."
-RELEASE_JSON=$(curl -fsSL --max-time 30 "$LATEST_URL") \
+RELEASE_JSON=$(curl -fsSL --max-time 30 --retry 3 --retry-all-errors --retry-delay 2 "$LATEST_URL") \
   || err "Failed to fetch releases from GitHub (check internet)"
 
 TAG=$(echo "$RELEASE_JSON" | python3 -c "
@@ -88,7 +92,7 @@ info "Downloading ${BIN_NAME} for ${ARCH_TAG}..."
 ASSET_URL="${INSTALLER_URL_BASE}/${TAG}/${BIN_NAME}"
 DEST="${TMP_DIR}/${BIN_NAME}"
 
-curl -fsSL --max-time 120 -o "$DEST" "$ASSET_URL" \
+curl -fsSL --max-time 120 --retry 3 --retry-all-errors --retry-delay 2 -o "$DEST" "$ASSET_URL" \
   || err "Failed to download $ASSET_URL"
 
 # Verify it's a binary
@@ -100,7 +104,7 @@ fi
 info "Verifying checksum..."
 CHECKSUM_URL="${INSTALLER_URL_BASE}/${TAG}/SHA256SUMS.txt"
 CHECKSUM_FILE="${TMP_DIR}/SHA256SUMS.txt"
-curl -fsSL --max-time 30 -o "$CHECKSUM_FILE" "$CHECKSUM_URL" \
+curl -fsSL --max-time 30 --retry 3 --retry-all-errors --retry-delay 2 -o "$CHECKSUM_FILE" "$CHECKSUM_URL" \
   || err "Failed to download checksums"
 EXPECTED=$(grep "megapolos-installer$" "$CHECKSUM_FILE" | awk '{print $1}')
 ACTUAL=$(sha256sum "$DEST" | awk '{print $1}')
@@ -125,12 +129,14 @@ if [[ -d /var/lib/megapolos ]] && ls /var/lib/megapolos/stage-*.done 2>/dev/null
 fi
 if [[ $has_existing -eq 1 ]]; then
   user_passed_resume=0
+  user_passed_wipe=0
   for arg in "$@"; do
-    if [[ "$arg" == "--resume" || "$arg" == --resume=* ]]; then
-      user_passed_resume=1
-    fi
+    case "$arg" in
+      --resume|--resume=*) user_passed_resume=1 ;;
+      --wipe|--wipe=*|--reset-db|--reset-db=*) user_passed_wipe=1 ;;
+    esac
   done
-  if [[ $user_passed_resume -eq 0 ]]; then
+  if [[ $user_passed_resume -eq 0 && $user_passed_wipe -eq 0 ]]; then
     AUTO_FLAGS="--resume"
     export MEGAPOLOS_AUTO_RESUME=1
     warn "На хосте найдена существующая установка (или её следы)."
@@ -143,7 +149,15 @@ fi
 CMD="sudo $DEST $* ${AUTO_FLAGS}"
 info "Running installer..."
 set +e
-"$DEST" "$@" ${AUTO_FLAGS}
+# Важно: скрипт может исполняться через `curl | bash` — тогда stdin (fd0) это
+# сам скрипт. Если запустить установщик с наследованием stdin, он вычитает
+# остаток скрипта → `RESULT: unbound variable`. Поэтому stdin — с терминала
+# (интерактивные вопросы) или /dev/null.
+if [[ -r /dev/tty ]]; then
+  "$DEST" "$@" ${AUTO_FLAGS} </dev/tty
+else
+  "$DEST" "$@" ${AUTO_FLAGS} </dev/null
+fi
 RESULT=$?
 set -e
 

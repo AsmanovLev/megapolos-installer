@@ -358,8 +358,16 @@ func existingInstallPrompt(baseDomain, guiDomain, apiURL string) string {
 	fmt.Println()
 	fmt.Print("> Введите номер [1]: ")
 
+	// Читаем с терминала: при запуске через `curl | bash` (или с
+	// перенаправленным stdin) fmt.Scanln(os.Stdin) мгновенно получает EOF и
+	// молча берёт дефолт (resume) — выглядит как «не спрашивает, сразу чинит».
+	in := os.Stdin
+	if f, err := os.OpenFile("/dev/tty", os.O_RDONLY, 0); err == nil {
+		defer f.Close()
+		in = f
+	}
 	var choice string
-	fmt.Scanln(&choice)
+	fmt.Fscanln(in, &choice)
 	if choice == "" {
 		choice = "1"
 	}
@@ -515,6 +523,21 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		}
 	}
 
+	// Вайп (флагом или выбранный в меню) = установка с нуля: не тащим
+	// домены/API-URL из сохранённого конфига, если они не заданы явно.
+	// Иначе после --wipe всплывает прежний base-domain (напр. megapolos.local).
+	if *wipe {
+		if !explicit["base-domain"] {
+			*baseDomain = envOr("MEGAPOLOS_BASE_DOMAIN", "megapolos.local")
+		}
+		if !explicit["gui-domain"] {
+			*guiDomain = envOr("MEGAPOLOS_GUI_DOMAIN", "")
+		}
+		if !explicit["api-url"] {
+			*apiURL = envOr("MEGAPOLOS_API_URL", "")
+		}
+	}
+
 	if *showVersion {
 		fmt.Println("megapolos-installer dev")
 		return
@@ -536,7 +559,10 @@ resume       = flag.Bool("resume", false, "продолжить установк
 	}
 	// --resume: сначала диагностика, потом — если нашли сломанную стадию —
 	// подставляем --retry-stage, чтобы не переустанавливать всё с нуля.
-	if *resume && *retryStage == "" {
+	// При --wipe не идём в resume-ветку: иначе doctor увидит ещё живую старую
+	// установку и выйдет «нечего продолжать» до того, как отработает wipe
+	// (в т.ч. когда install.sh авто-добавил --resume).
+	if *resume && *retryStage == "" && !*wipe {
 		report, code := steps.Doctor(os.Stderr)
 		if code == 0 && report.AllStagesDone && report.APIHealthy {
 			fmt.Fprintln(os.Stderr, "установка завершена — нечего продолжать")
