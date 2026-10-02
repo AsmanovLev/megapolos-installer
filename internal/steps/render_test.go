@@ -7,7 +7,8 @@ import (
 )
 
 func TestRenderCoreConfig(t *testing.T) {
-	s := RenderCoreConfig("SECRET", "megapolos", "PASS123", "megapolos", false, true)
+	// swarm (networkMode=""): сетевые поля не пишутся — обратная совместимость
+	s := RenderCoreConfig("SECRET", "megapolos", "PASS123", "megapolos", false, true, "", "", 24)
 	var m map[string]any
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
 		t.Fatalf("невалидный JSON: %v\n%s", err, s)
