@@ -1,0 +1,73 @@
+name: slim-release
+
+# Ручной + по тегу: релиз = статический бинарь + install.sh + SHA256SUMS.txt.
+# Имена ассетов зафиксированы: install.sh качает `megapolos-installer` и
+# сверяет строку `megapolos-installer$` в SHA256SUMS.txt, переименовывать
+# нельзя. Только linux/amd64 (arm64 потребует правок install.sh).
+# Полный sqfs-бандл здесь не собирается (нужен VM/docker-донор) — см.
+# vm/make-bundle*.sh, релиз build-N собирается вручную.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Тег релиза (создастся, если нет)"
+        required: true
+        default: slim-latest
+  push:
+    tags:
+      - "slim-*"
+      - "build-*"
+
+permissions:
+  contents: write   # создание тега/релиза и загрузка ассетов
+
+jobs:
+  release:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          [ -n "$TAG" ] || TAG="${GITHUB_REF#refs/tags/}"
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          git tag -f "$TAG"
+          git push -f origin "$TAG"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: vet + test
+        run: |
+          CGO_ENABLED=0 go vet ./...
+          CGO_ENABLED=0 go test ./...
+
+      - name: build (static, stripped)
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -trimpath -ldflags="-s -w" -o megapolos-installer .
+          file megapolos-installer
+          ./megapolos-installer --help >/dev/null 2>&1 || true
+
+      - name: checksums
+        run: |
+          sha256sum megapolos-installer install.sh > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" megapolos-installer install.sh SHA256SUMS.txt --clobber
+          else
+            gh release create "$TAG" megapolos-installer install.sh SHA256SUMS.txt \
+              --title "$TAG" --notes "Автоматическая сборка slim-релиза (linux/amd64, static)."
+          fi
+          echo "https://github.com/${{ github.repository }}/releases/tag/$TAG"
