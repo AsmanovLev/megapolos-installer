@@ -221,8 +221,8 @@ func ensureRegistry(c *Ctx, w io.Writer) error {
 
 // stageKey → каноничный ключ стадии (для маркера, --retry-stage, --info).
 const (
-	stageInit          = "init"
-	stagePrepareForCore = "prepare-for-core"
+	stageInit            = "init"
+	stagePrepareForCore  = "prepare-for-core"
 	stageInstallRegistry = "install-registry"
 )
 
@@ -310,7 +310,12 @@ func nodeChain(c *Ctx, w io.Writer, nodeID string) error {
 		// при готовом артефакте/маркере.
 		if c.O.RetryStage == "" && artifactOK && (markerExists || c.O.Resume) {
 			fmt.Fprintf(w, "%s: артефакт на месте — пропускаю%s\n",
-				stage.Label, func() string { if markerExists { return " (по маркеру)" }; return " (--resume)" }())
+				stage.Label, func() string {
+					if markerExists {
+						return " (по маркеру)"
+					}
+					return " (--resume)"
+				}())
 			writeStageMarker(c, stage.Key)
 			continue
 		}
@@ -626,7 +631,10 @@ func bootstrapStep() Step {
 	marker := func(o *Opts) string { return filepath.Join(o.InstallDir, ".megapolos-bootstrap") }
 	return StepFunc{
 		N: "bootstrap",
-		D: []string{"token", "swarm", "ansible", "docker-images"},
+		// ВАЖНО: без зависимости от "swarm" — в native-режиме шаг swarmStep не
+		// добавляется в DAG, и ссылка на него оставила бы bootstrap без готовых
+		// зависимостей (зависание runner'а).
+		D: []string{"token", "ansible", "docker-images"},
 		DetectF: func(c *Ctx) (bool, string) {
 			// --retry-stage: форсируем запуск даже при готовом маркере,
 			// иначе запрошенная стадия никогда не перезапустится.

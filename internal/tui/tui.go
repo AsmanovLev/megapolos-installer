@@ -114,8 +114,8 @@ func hostMirrorLabel(hostIP string) string {
 // Form диспетчеризует ввод через InputHandler (без type-switch на *InputField).
 type markerField struct {
 	*tview.InputField
-	pos       int  // наша копия позиции курсора (в tview она приватна)
-	required  bool // пустое поле → красный лейбл
+	pos       int    // наша копия позиции курсора (в tview она приватна)
+	required  bool   // пустое поле → красный лейбл
 	origLabel string // исходный лейбл (для восстановления после ▸)
 }
 
@@ -294,6 +294,20 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddCheckbox("Сбросить БД (--reset-db)", o.ResetDB, func(b bool) { o.ResetDB = b })
 	form.AddCheckbox("Пакеты из репозиториев (--repo-packages)", o.RepoPackages, func(b bool) { o.RepoPackages = b })
 	form.AddCheckbox("Пропустить совместимость (--force-compatibility)", o.ForceCompat, func(b bool) { o.ForceCompat = b })
+	// Сеть: режим рантайма + пул подсетей + спецификация удалённой ноды.
+	netModes := []string{"native: без Docker Swarm, статический IP (целевая модель)", "swarm: прежний Docker Swarm (устаревший)"}
+	netIdx := 0
+	if o.NetworkMode == "swarm" {
+		netIdx = 1
+	}
+	form.AddDropDown("Сеть", netModes, netIdx, func(_ string, idx int) {
+		if idx == 1 {
+			o.NetworkMode = "swarm"
+		} else {
+			o.NetworkMode = "native"
+		}
+	})
+	form.AddFormItem(newMarkerField("network-pool (пул подсетей нод, F1)", o.NetworkPool, 0, false, func(s string) { o.NetworkPool = strings.TrimSpace(s) }))
 	form.AddButton("Начать установку", func() {
 		idx, _ := form.GetFormItemByLabel("Источник").(*tview.DropDown).GetCurrentOption()
 		choice := "gitlab"

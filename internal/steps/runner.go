@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -80,6 +81,14 @@ type Opts struct {
 	Swap             string     // auto|force|skip: auto = создавать только при RAM < 8G
 	SvcUser          string
 	HostIP           string
+	// NetworkMode — рантайм сети ядра: "native" (без Docker Swarm, целевая
+	// модель) | "swarm" (обратная совместимость). В native установщик НЕ
+	// выполняет `docker swarm init` и пробрасывает режим/пул в ядро.
+	NetworkMode string
+	// NetworkPool/nodeSubnetPrefix — F1: пул подсетей нод кластера и префикс
+	// подсети на ноду. При native+непустом пуле записываются в config.json ядра.
+	NetworkPool      string
+	NodeSubnetPrefix int
 	SourceCustom     string // URL/путь при выборе «свой» в TUI
 	Hostname         string
 	Token            string // заполняется шагом token
@@ -158,6 +167,15 @@ func (o *Opts) ReproductionCommand() string {
 	}
 	if o.HostIP != "" {
 		add("host-ip", o.HostIP)
+	}
+	if o.NetworkMode != "" && o.NetworkMode != "swarm" {
+		add("network-mode", o.NetworkMode)
+	}
+	if o.NetworkPool != "" {
+		add("network-pool", o.NetworkPool)
+	}
+	if o.NodeSubnetPrefix != 0 && o.NodeSubnetPrefix != 24 {
+		add("node-subnet-prefix", strconv.Itoa(o.NodeSubnetPrefix))
 	}
 	return "megapolos-installer " + strings.Join(args, " ")
 }

@@ -60,6 +60,13 @@ sudo /mnt/megapolos-bundle/installer --no-tui --yes   # headless
 - `--doctor` — диагностика; `--info` — последние ansible-логи.
 - `--swap=auto|force|skip`, `--self-node=true|false|auto` — строковые, через `=`.
 - `--yes --no-tui` — headless без вопросов.
+- `--network-mode=native|swarm` — рантайм сети ядра. По умолчанию **native**:
+  установщик **не выполняет `docker swarm init`** (Swarm в native не нужен),
+  пишет `networkMode` в `config.json` и фиксирует режим в systemd drop-in ядра.
+- `--network-pool=<CIDR>` + `--node-subnet-prefix=<N>` — F1: пул подсетей нод
+  (напр. `--network-pool=172.30.0.0/16 --node-subnet-prefix=24`). Нужен для
+  многонодового стенда: без пула обе ноды получат одну подсеть.
+  Вторая нода подключается уже из интерфейса Megapolos (Add Node), не установщиком.
 
 Настройки прогона (включая секреты для восстановления) сохраняются в
 `/var/lib/megapolos/installer.cfg` и подхватываются при `--resume`; явные

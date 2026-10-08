@@ -38,6 +38,16 @@ func envOr(key, def string) string {
 	return def
 }
 
+// envInt — целочисленная env-переменная с дефолтом.
+func envInt(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 func envBool(key string, def bool) bool {
 	if v := os.Getenv(key); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
@@ -142,25 +152,28 @@ func saveInstallerCfg(opts *steps.Opts) {
 		return
 	}
 	cfg := struct {
-		Source         string
-		CoreRef        string
-		GUIRef         string
-		APIURL         string
-		GUI            bool
-		GUIApp         bool
-		GUIDomain      string
-		GUITLS         bool
-		Standalone     bool
-		BaseDomain     string
-		RepoPackages   bool
-		ForceCompat    bool
-		DevMode        bool
-		DBName         string
-		DBUser         string
-		InstallDir     string
-		NodeRootPass   string
-		Swap           string
-		HostIP         string
+		Source           string
+		CoreRef          string
+		GUIRef           string
+		APIURL           string
+		GUI              bool
+		GUIApp           bool
+		GUIDomain        string
+		GUITLS           bool
+		Standalone       bool
+		NetworkMode      string
+		NetworkPool      string
+		NodeSubnetPrefix int
+		BaseDomain       string
+		RepoPackages     bool
+		ForceCompat      bool
+		DevMode          bool
+		DBName           string
+		DBUser           string
+		InstallDir       string
+		NodeRootPass     string
+		Swap             string
+		HostIP           string
 		// Секреты: нужны, чтобы восстановиться после потери config.json
 		// (например удалили /opt/megapolos) при живой БД — иначе новый
 		// пароль роли ≠ пароль в БД → 28P01.
@@ -170,7 +183,9 @@ func saveInstallerCfg(opts *steps.Opts) {
 		Source: opts.Source, CoreRef: opts.CoreRef, GUIRef: opts.GUIRef,
 		APIURL: opts.APIURL, GUI: opts.GUI, GUIApp: opts.GUIApp,
 		GUIDomain: opts.GUIDomain, GUITLS: opts.GUITLS, Standalone: opts.Standalone,
-		BaseDomain: opts.BaseDomain, RepoPackages: opts.RepoPackages,
+		NetworkMode: opts.NetworkMode, NetworkPool: opts.NetworkPool,
+		NodeSubnetPrefix: opts.NodeSubnetPrefix,
+		BaseDomain:       opts.BaseDomain, RepoPackages: opts.RepoPackages,
 		ForceCompat: opts.ForceCompat, DevMode: opts.DevMode,
 		DBName: opts.DBName, DBUser: opts.DBUser,
 		InstallDir: opts.InstallDir, NodeRootPass: opts.NodeRootPassword,
@@ -219,6 +234,8 @@ func loadInstallerCfg(explicit map[string]bool) map[string]string {
 		"ForceCompat": "force-compatibility", "DevMode": "dev-mode",
 		"DBName": "db-name", "DBUser": "db-user", "InstallDir": "dir",
 		"NodeRootPass": "node-root-password", "Swap": "swap", "HostIP": "host-ip",
+		"NetworkMode": "network-mode", "NetworkPool": "network-pool",
+		"NodeSubnetPrefix": "node-subnet-prefix",
 	}
 	out := make(map[string]string)
 	for jsonKey, v := range cfg {
@@ -398,7 +415,7 @@ func main() {
 		wipe         = flag.Bool("wipe", envOr("MEGAPOLOS_WIPE", "false") == "true", "очистить предыдущую установку перед стартом")
 		resetDB      = flag.Bool("reset-db", envOr("MEGAPOLOS_RESET_DB", "false") == "true", "сбросить БД при wipe (dropdb + dropuser + пересоздать)")
 		repoPackages = flag.Bool("repo-packages", envOr("MEGAPOLOS_REPO_PACKAGES", "false") == "true", "пакеты из репозиториев (без bundle-debs)")
-		forceCompat = flag.Bool("force-compatibility", envOr("MEGAPOLOS_FORCE_COMPAT", "false") == "true", "пропустить проверку совместимости бандла")
+		forceCompat  = flag.Bool("force-compatibility", envOr("MEGAPOLOS_FORCE_COMPAT", "false") == "true", "пропустить проверку совместимости бандла")
 		devMode      = flag.Bool("dev-mode", envBool("MEGAPOLOS_DEV_MODE", true), "devMode (все контейнеры на localhost)")
 		debug        = flag.Bool("debug", envBool("MEGAPOLOS_DEBUG", false), "debug-логи ядра")
 		dbName       = flag.String("db-name", envOr("MEGAPOLOS_DB_NAME", "megapolos"), "имя БД")
@@ -409,16 +426,19 @@ func main() {
 		nodePass     = flag.String("node-root-password", envOr("MEGAPOLOS_NODE_ROOT_PASSWORD", "megapolos"), "пароль root для SSH себя-ноды")
 		baseDomain   = flag.String("base-domain", envOr("MEGAPOLOS_BASE_DOMAIN", "megapolos.local"), "базовый домен инстансов (пусто = не создавать)")
 		swapMode     = flag.String("swap", envOr("MEGAPOLOS_SWAP", "auto"), "swap: auto (только при RAM<8G) | force | skip")
+		networkMode  = flag.String("network-mode", envOr("MEGAPOLOS_NETWORK_MODE", "native"), "рантайм сети: native (без Docker Swarm, целевая модель) | swarm")
+		networkPool  = flag.String("network-pool", envOr("MEGAPOLOS_NETWORK_POOL", ""), "F1: пул подсетей нод кластера (напр. 172.30.0.0/16; пусто = одна нода)")
+		subnetPrefix = flag.Int("node-subnet-prefix", envInt("MEGAPOLOS_NODE_SUBNET_PREFIX", 24), "F1: префикс подсети на ноду из network-pool")
 		jobs         = flag.Int("jobs", 2, "максимум параллельных шагов (1 = строго последовательно)")
 		yes          = flag.Bool("yes", false, "принять все значения по умолчанию")
 		noTUI        = flag.Bool("no-tui", false, "без TUI (текстовый вывод)")
 		hostIP       = flag.String("host-ip", envOr("MEGAPOLOS_HOST_IP", ""), "IP хоста с кэшами/зеркалом (пусто = vm.env HOST_IP, иначе 10.0.2.2)")
 		showVersion  = flag.Bool("version", false, "версия и выход")
 		printCmd     = flag.Bool("print-command", false, "вывести exact command для воспроизведения и выйти")
-resume       = flag.Bool("resume", false, "продолжить установку: пропустить уже завершённые стадии (по маркерам и артефактам)")
-	retryStage   = flag.String("retry-stage", "", "повторить только стадию: init|prepare-for-core|install-registry (без --resume)")
-	showInfo     = flag.Bool("info", false, "показать последние логи ansible (стадии платформы) и выйти")
-	doctor       = flag.Bool("doctor", false, "диагностика существующей установки (что есть/чего нет) и рекомендация: --resume | --retry-stage | --wipe")
+		resume       = flag.Bool("resume", false, "продолжить установку: пропустить уже завершённые стадии (по маркерам и артефактам)")
+		retryStage   = flag.String("retry-stage", "", "повторить только стадию: init|prepare-for-core|install-registry (без --resume)")
+		showInfo     = flag.Bool("info", false, "показать последние логи ansible (стадии платформы) и выйти")
+		doctor       = flag.Bool("doctor", false, "диагностика существующей установки (что есть/чего нет) и рекомендация: --resume | --retry-stage | --wipe")
 	)
 	flag.Parse()
 
@@ -457,14 +477,35 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		applyCfgToFlag("node-root-password", cfg["node-root-password"], func(v string) { *nodePass = v })
 		applyCfgToFlag("swap", cfg["swap"], func(v string) { *swapMode = v })
 		applyCfgToFlag("host-ip", cfg["host-ip"], func(v string) { *hostIP = v })
+		applyCfgToFlag("network-mode", cfg["network-mode"], func(v string) { *networkMode = v })
+		applyCfgToFlag("network-pool", cfg["network-pool"], func(v string) { *networkPool = v })
+		applyCfgToFlag("node-subnet-prefix", cfg["node-subnet-prefix"], func(v string) {
+			if n, err := strconv.Atoi(v); err == nil {
+				*subnetPrefix = n
+			}
+		})
 		// bool-флаги (ключи — flag-имена, lower-case)
-		if v, ok := cfg["gui"]; ok { *guiOn = v != "false" }
-		if v, ok := cfg["gui-app"]; ok { *guiApp = v != "false" }
-		if v, ok := cfg["gui-tls"]; ok { *guiTLS = v != "false" }
-		if v, ok := cfg["standalone"]; ok { *standalone = v != "false" }
-		if v, ok := cfg["repo-packages"]; ok { *repoPackages = v != "false" }
-		if v, ok := cfg["force-compatibility"]; ok { *forceCompat = v != "false" }
-		if v, ok := cfg["dev-mode"]; ok { *devMode = v != "false" }
+		if v, ok := cfg["gui"]; ok {
+			*guiOn = v != "false"
+		}
+		if v, ok := cfg["gui-app"]; ok {
+			*guiApp = v != "false"
+		}
+		if v, ok := cfg["gui-tls"]; ok {
+			*guiTLS = v != "false"
+		}
+		if v, ok := cfg["standalone"]; ok {
+			*standalone = v != "false"
+		}
+		if v, ok := cfg["repo-packages"]; ok {
+			*repoPackages = v != "false"
+		}
+		if v, ok := cfg["force-compatibility"]; ok {
+			*forceCompat = v != "false"
+		}
+		if v, ok := cfg["dev-mode"]; ok {
+			*devMode = v != "false"
+		}
 		fmt.Fprintf(os.Stderr, "[INFO] применён сохранённый конфиг: %s\n", installerCfgPath)
 	}
 
@@ -580,6 +621,7 @@ resume       = flag.Bool("resume", false, "продолжить установк
 	if *printCmd {
 		fmt.Println(buildCommandLine(*coreRef, *guiRef, *source, *sourceCustom, *apiURL,
 			*guiDomain, *dbName, *dbUser, *dir, *bundle, *selfNode, "***", *baseDomain, *swapMode, *hostIP,
+			*networkMode, *networkPool, strconv.Itoa(*subnetPrefix),
 			*guiOn, *guiApp, *guiTLS, *standalone, *wipe, *resetDB, *repoPackages, *forceCompat,
 			*devMode, *debug, *yes, *noTUI))
 		return
@@ -745,6 +787,9 @@ resume       = flag.Bool("resume", false, "продолжить установк
 		Swap:             *swapMode,
 		SvcUser:          "megapolos",
 		HostIP:           hostIPVal,
+		NetworkMode:      *networkMode,
+		NetworkPool:      *networkPool,
+		NodeSubnetPrefix: *subnetPrefix,
 		SrcKind:          src.Kind,
 		SrcHuman:         src.Human,
 		Hostname:         hostname,
@@ -868,7 +913,7 @@ resume       = flag.Bool("resume", false, "продолжить установк
 	fmt.Println("  Логи:   journalctl -u megapolos-core -f")
 }
 
-func buildCommandLine(coreRef, guiRef, source, sourceCustom, apiURL, guiDomain, dbName, dbUser, dir, bundle, selfNode, nodePass, baseDomain, swapMode, hostIP string, guiOn, guiApp, guiTLS, standalone, wipe, resetDB, repoPackages, forceCompat, devMode, debug, yes, noTUI bool) string {
+func buildCommandLine(coreRef, guiRef, source, sourceCustom, apiURL, guiDomain, dbName, dbUser, dir, bundle, selfNode, nodePass, baseDomain, swapMode, hostIP, networkMode, networkPool, subnetPrefix string, guiOn, guiApp, guiTLS, standalone, wipe, resetDB, repoPackages, forceCompat, devMode, debug, yes, noTUI bool) string {
 	var args []string
 	add := func(name, val string) {
 		if val == "" || val == "false" {
@@ -939,6 +984,15 @@ func buildCommandLine(coreRef, guiRef, source, sourceCustom, apiURL, guiDomain, 
 	}
 	if hostIP != "" {
 		add("host-ip", hostIP)
+	}
+	if networkMode != "" && networkMode != "swarm" {
+		add("network-mode", networkMode)
+	}
+	if networkPool != "" {
+		add("network-pool", networkPool)
+	}
+	if subnetPrefix != "" && subnetPrefix != "24" {
+		add("node-subnet-prefix", subnetPrefix)
 	}
 	addb("yes", yes)
 	addb("no-tui", noTUI)

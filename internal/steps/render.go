@@ -3,11 +3,16 @@ package steps
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // RenderCoreConfig — config/config.json ядра (строгий JSON, без комментариев).
 // Порядок полей как у исторического конфига.
-func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool) string {
+//
+// networkMode/networkPool/nodeSubnetPrefix пишутся только в native-режиме —
+// чтобы без явного запроса не менять прежнее поведение ядра (swarm) и порядок
+// полей для обратной совместимости.
+func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool, networkMode, networkPool string, nodeSubnetPrefix int) string {
 	// struct с точным порядком полей
 	cfg := struct {
 		Secret            string `json:"secret"`
@@ -17,6 +22,10 @@ func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool
 		RegistryPassword  string `json:"registryPassword"`
 		Debug             bool   `json:"debug"`
 		DevMode           bool   `json:"devMode"`
+		NetworkMode       string `json:"networkMode,omitempty"`
+		NetworkSubnet     string `json:"networkSubnet,omitempty"`
+		NetworkPool       string `json:"networkPool,omitempty"`
+		NodeSubnetPrefix  int    `json:"nodeSubnetPrefix,omitempty"`
 		PublicSchema      bool   `json:"publicSchema"`
 		AllowUnauthorized bool   `json:"allowUnauthorized"`
 		NoRoot            bool   `json:"noRoot"`
@@ -33,8 +42,34 @@ func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool
 		PublicSchema:     false,
 		NoRoot:           true, // noRoot=true безопасно и при root-запуске
 	}
+	if networkMode == "native" {
+		netSubnet := "172.20.0.0/16"
+		if networkPool != "" {
+			// Первый блок пула = подсеть ядра; ноды получают свои из пула (F1).
+			netSubnet = networkPool
+		}
+		cfg.NetworkMode = "native"
+		cfg.NetworkSubnet = netSubnet
+		cfg.NetworkPool = networkPool
+		cfg.NodeSubnetPrefix = nodeSubnetPrefix
+	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	return string(b) + "\n"
+}
+
+// RenderNetmodeDropin — systemd drop-in для ядра: фиксирует сетевой режим и
+// пул подсетей в окружении сервиса. Отдельный файл переживает перезапись
+// основного юнита установщиком (systemdStep) и подхватывается при рестарте.
+func RenderNetmodeDropin(networkMode, networkPool string, nodeSubnetPrefix int) string {
+	var b strings.Builder
+	b.WriteString("# Megapolos: сетевой режим (генерируется установщиком)\n")
+	b.WriteString("[Service]\n")
+	fmt.Fprintf(&b, "Environment=MEGAPOLOS_NETWORK_MODE=%s\n", networkMode)
+	if networkPool != "" {
+		fmt.Fprintf(&b, "Environment=MEGAPOLOS_NETWORK_POOL=%s\n", networkPool)
+	}
+	fmt.Fprintf(&b, "Environment=MEGAPOLOS_NODE_SUBNET_PREFIX=%d\n", nodeSubnetPrefix)
+	return b.String()
 }
 
 // RenderGUIConfig — public/config/config.json фронта (читается в рантайме).

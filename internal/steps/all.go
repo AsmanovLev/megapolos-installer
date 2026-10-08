@@ -413,7 +413,9 @@ func All(o *Opts) []Step {
 					fmt.Fprintf(w, "apt через кэш %s\n", c.O.AptProxy)
 				}
 				aptUpdate(c, w)
-				pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl certbot"
+				// sshpass — ядро ходит на удалённые ноды по SSH с паролем
+				// (ansible_ssh_password) — без него постановка второй ноды падает.
+				pkgs := "curl ca-certificates gnupg lsb-release git build-essential python3 openssl certbot sshpass"
 				if c.O.GUI && !c.O.GUIApp {
 					pkgs += " nginx" // nginx только для static GUI (app-режим: nginx-контейнер ноды)
 				}
@@ -456,7 +458,6 @@ func All(o *Opts) []Step {
 		packagesStep(),
 		ansibleStep(),
 		userStep(),
-		swarmStep(),
 		dockerImagesStep(),
 		cloneStep("megapolos-core", coreDir),
 		dbStep(coreDir),
@@ -465,10 +466,19 @@ func All(o *Opts) []Step {
 		coreConfigStep(coreDir),
 		tokenStep(),
 	}
+	if o.NetworkMode != "native" {
+		// Docker Swarm нужен прежнему swarm-рантайму (стек/registry). В native
+		// (целевая модель без Swarm) `docker swarm init` не выполняем вовсе.
+		steps = append(steps, swarmStep())
+	}
 	if o.AddSelfNode {
 		// bootstrap = платформенная оркестрация из install.ts:
 		// нода → INIT → PREPARE FOR CORE → INSTALL REGISTRY → (опц.) деплой GUI-приложения
 		steps = append(steps, bootstrapStep())
+		// native: зафиксировать сетевой режим/пул в окружении ядра (drop-in).
+		if o.NetworkMode == "native" {
+			steps = append(steps, netmodeStep())
+		}
 	}
 	if o.GUI && !o.GUIApp {
 		// static GUI: клон/сборка фронта и nginx на этой машине
@@ -482,7 +492,7 @@ func All(o *Opts) []Step {
 			steps = append(steps, guiTLSStep(coreDir, guiDir))
 		}
 	}
-	steps = append(steps, systemdStep(coreDir, guiDir, o.GUI && !o.GUIApp))
+	steps = append(steps, systemdStep(coreDir, guiDir, o.GUI && !o.GUIApp, o.NetworkMode == "native"))
 	if o.BaseDomain != "" {
 		steps = append(steps, baseDomainStep())
 	}
@@ -908,7 +918,8 @@ func coreConfigStep(coreDir string) Step {
 		},
 		RunF: func(c *Ctx, w io.Writer) error {
 			return writeFile(c, w, filepath.Join(coreDir, "config", "config.json"),
-				RenderCoreConfig(c.O.Secret, c.O.DBUser, c.O.DBPass, c.O.DBName, c.O.Debug, c.O.DevMode),
+				RenderCoreConfig(c.O.Secret, c.O.DBUser, c.O.DBPass, c.O.DBName, c.O.Debug, c.O.DevMode,
+					c.O.NetworkMode, c.O.NetworkPool, c.O.NodeSubnetPrefix),
 				0o600, c.O.SvcUser+":"+c.O.SvcUser)
 		},
 	}
@@ -940,9 +951,47 @@ func coreCwdValid(c *Ctx) bool {
 	return os.SameFile(procFi, pathFi)
 }
 
+// netmodeStep: фиксирует сетевой режим и пул подсетей в systemd drop-in ядра.
+// Отдельный файл (megapolos-core.service.d/netmode.conf) переживает перезапись
+// основного юнита и применяется при следующем старте/рестарте ядра. Идёт ПОСЛЕ
+// bootstrap: bootstrap стартует ядро, здесь мы задаём окружение для его рестарта.
+func netmodeStep() Step {
+	return StepFunc{
+		N: "netmode", D: []string{"bootstrap"},
+		DetectF: func(c *Ctx) (bool, string) {
+			p := "/etc/systemd/system/megapolos-core.service.d/netmode.conf"
+			cur, err := os.ReadFile(p)
+			if err != nil {
+				return false, ""
+			}
+			if string(cur) == RenderNetmodeDropin(c.O.NetworkMode, c.O.NetworkPool, c.O.NodeSubnetPrefix) &&
+				outOK(c, "systemctl show megapolos-core -p Environment --value | grep -q MEGAPOLOS_NETWORK_MODE") {
+				return true, "сетевой режим уже зафиксирован"
+			}
+			return false, ""
+		},
+		RunF: func(c *Ctx, w io.Writer) error {
+			if err := sh(c, w, "mkdir -p /etc/systemd/system/megapolos-core.service.d"); err != nil {
+				return err
+			}
+			if err := writeFile(c, w, "/etc/systemd/system/megapolos-core.service.d/netmode.conf",
+				RenderNetmodeDropin(c.O.NetworkMode, c.O.NetworkPool, c.O.NodeSubnetPrefix), 0o644, ""); err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "сетевой режим ядра: %s (pool=%q, prefix=%d)\n",
+				c.O.NetworkMode, c.O.NetworkPool, c.O.NodeSubnetPrefix)
+			return sh(c, w, "systemctl daemon-reload && systemctl restart megapolos-core")
+		},
+	}
+}
+
 // systemdStep: юниты + nginx + (ре)старт.
-func systemdStep(coreDir, guiDir string, gui bool) Step {
+func systemdStep(coreDir, guiDir string, gui bool, native bool) Step {
 	deps := []string{"npm:core", "config:core"}
+	if native {
+		// drop-in с сетевым режимом должен лечь ДО старта ядра
+		deps = append(deps, "netmode")
+	}
 	if gui {
 		deps = append(deps, "build:gui")
 	}
