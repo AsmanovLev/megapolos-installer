@@ -492,7 +492,7 @@ func All(o *Opts) []Step {
 			steps = append(steps, guiTLSStep(coreDir, guiDir))
 		}
 	}
-	steps = append(steps, systemdStep(coreDir, guiDir, o.GUI && !o.GUIApp, o.NetworkMode == "native"))
+	steps = append(steps, systemdStep(coreDir, guiDir, o.GUI && !o.GUIApp))
 	if o.BaseDomain != "" {
 		steps = append(steps, baseDomainStep())
 	}
@@ -986,12 +986,16 @@ func netmodeStep() Step {
 }
 
 // systemdStep: юниты + nginx + (ре)старт.
-func systemdStep(coreDir, guiDir string, gui bool, native bool) Step {
+//
+// ВАЖНО: НЕ зависит от "netmode". Иначе образуется цикл
+// systemd → netmode → bootstrap → token → systemd (планировщик падает с
+// «внутренняя ошибка: цикл в зависимостях шагов»). Порядок такой:
+// systemd поднимает ядро → token забирает токен → bootstrap выполняет
+// платформенные стадии → netmode кладёт drop-in и сам рестартует ядро
+// (`systemctl restart megapolos-core`), т.е. режим применяется до финального
+// старта ядра по факту.
+func systemdStep(coreDir, guiDir string, gui bool) Step {
 	deps := []string{"npm:core", "config:core"}
-	if native {
-		// drop-in с сетевым режимом должен лечь ДО старта ядра
-		deps = append(deps, "netmode")
-	}
 	if gui {
 		deps = append(deps, "build:gui")
 	}
