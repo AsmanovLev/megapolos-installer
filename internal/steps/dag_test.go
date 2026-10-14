@@ -2,6 +2,7 @@ package steps
 
 import (
 	"fmt"
+	"io"
 	"testing"
 )
 
@@ -190,4 +191,29 @@ func TestSystemdDoesNotDependOnNetmode(t *testing.T) {
 		return
 	}
 	t.Fatal("в графе нет шага systemd")
+}
+
+// TestAllDAGRunnerNoCycle — прогон РЕАЛЬНОГО планировщика (Runner) на графе
+// All(). Все шаги подменены на «skip» (Detect=true), поэтому ничего не
+// выполняется — проверяется именно фаза планирования, которая падала с
+// «внутренняя ошибка: цикл в зависимостях шагов» (runner.go). При цикле
+// Runner.Run вернёт эту ошибку; при корректном DAG — nil.
+func TestAllDAGRunnerNoCycle(t *testing.T) {
+	for name, o := range dagOptSets() {
+		t.Run(name, func(t *testing.T) {
+			var skip []Step
+			for _, s := range All(o) {
+				skip = append(skip, StepFunc{
+					N:       s.Name(),
+					D:       s.Deps(),
+					DetectF: func(*Ctx) (bool, string) { return true, "skip (тест)" },
+					RunF:    func(*Ctx, io.Writer) error { return nil },
+				})
+			}
+			r := &Runner{Ctx: testCtx(), Steps: skip, Jobs: 4, UI: nopUI{t}}
+			if err := r.Run(); err != nil {
+				t.Fatalf("планировщик не прошёл граф: %v", err)
+			}
+		})
+	}
 }

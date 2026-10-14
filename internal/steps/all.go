@@ -705,11 +705,37 @@ func dbMigrateStep(coreDir string) StepFunc {
 	return StepFunc{
 		N: "db-migrate", D: []string{"db", "npm:core", "config:core"},
 		DetectF: func(c *Ctx) (bool, string) {
-			// дешёвая проверка по известному маркеру дрейфа
-			if outOK(c, fmt.Sprintf("sudo -u postgres psql -d %s -tAc \"SELECT 1 FROM information_schema.columns WHERE table_name='repository' AND column_name='is_private'\" | grep -q 1", c.O.DBName)) {
-				return true, "схема актуальна"
+			// Проверяем НАБОР маркеров дрейфа «дамп отстаёт от entities»:
+			// пропускаем schema:update только если присутствуют ВСЕ ожидаемые
+			// колонки/таблицы. Раньше проверялся один маркер (repository.is_private),
+			// из-за чего другие расхождения (напр. configuration.is_default,
+			// таблицы хэш-модели версий из миграции 031) молча проскакивали и
+			// падали уже на createConfiguration / работе с версиями приложений.
+			required := []struct{ table, column string }{
+				{"repository", "is_private"},
+				{"configuration", "is_default"},
+				{"configuration", "root_domain_id"},
+				{"app_version", "hash"}, // миграция 031 (хэш-модель версий)
 			}
-			return false, ""
+			for _, r := range required {
+				q := fmt.Sprintf("sudo -u postgres psql -d %s -tAc \"SELECT 1 FROM information_schema.columns WHERE table_name='%s' AND column_name='%s'\" | grep -q 1", c.O.DBName, r.table, r.column)
+				if !outOK(c, q) {
+					return false, fmt.Sprintf("нет колонки %s.%s", r.table, r.column)
+				}
+			}
+			// Таблицы, добавляемые миграцией 031 (M2M-pivot schema:update не создаёт).
+			requiredTables := []string{
+				"app_module_version",
+				"app_version_parents",
+				"app_module_version_parents",
+			}
+			for _, t := range requiredTables {
+				q := fmt.Sprintf("sudo -u postgres psql -d %s -tAc \"SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='%s'\" | grep -q 1", c.O.DBName, t)
+				if !outOK(c, q) {
+					return false, fmt.Sprintf("нет таблицы %s", t)
+				}
+			}
+			return true, "схема актуальна"
 		},
 		RunF: func(c *Ctx, w io.Writer) error {
 			// Legacy-shim: дамп создаёт нативный enum image_status и дефолт

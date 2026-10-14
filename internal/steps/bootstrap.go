@@ -98,6 +98,55 @@ func gql(c *Ctx, w io.Writer, query string, vars map[string]any) (json.RawMessag
 	return apiQueryWait(c, w, c.O.Token, query, vars)
 }
 
+// ensureBaseDomain — get-or-create базового домена (isBaseDomain=true) для
+// BaseDomain и возврат его id. Нужен до createConfiguration: ядро
+// (без-docker-swarm) требует rootDomain, а шаг base-domain идёт позже bootstrap.
+// Если BaseDomain пуст — возвращает "" (ядро применит свой дефолт).
+func ensureBaseDomain(c *Ctx, w io.Writer) (string, error) {
+	if c.O.BaseDomain == "" {
+		return "", nil
+	}
+	data, err := gql(c, w, "{ getAllDomain { id name isBaseDomain } }", nil)
+	if err != nil {
+		return "", fmt.Errorf("getAllDomain: %w", err)
+	}
+	var parsed struct {
+		GetAllDomain []struct {
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			IsBaseDomain bool   `json:"isBaseDomain"`
+		} `json:"getAllDomain"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return "", err
+	}
+	for _, d := range parsed.GetAllDomain {
+		if d.Name == c.O.BaseDomain && d.IsBaseDomain {
+			return d.ID, nil
+		}
+	}
+	res, err := gql(c, w, "mutation CreateDomain($values: DomainInput!) { createDomain(values: $values) { id name isBaseDomain } }",
+		map[string]any{"values": map[string]any{
+			"name":         c.O.BaseDomain,
+			"isBaseDomain": true,
+		}})
+	if err != nil {
+		return "", fmt.Errorf("createDomain: %w", err)
+	}
+	var created struct {
+		CreateDomain struct {
+			ID string `json:"id"`
+		} `json:"createDomain"`
+	}
+	if err := json.Unmarshal(res, &created); err != nil {
+		return "", err
+	}
+	if created.CreateDomain.ID != "" {
+		fmt.Fprintf(w, "базовый домен %s подготовлен для rootDomain конфигурации\n", c.O.BaseDomain)
+	}
+	return created.CreateDomain.ID, nil
+}
+
 // waitNodeRunning — ждём lifeStatus 'running': стадии (init/prepare/registry)
 // запускают ansible в фоне и сразу возвращаются. Как install.ts: сначала пауза,
 // чтобы не поймать прошлый 'running', затем polling до ~7.5 мин.
@@ -425,7 +474,7 @@ func deployGUIApp(c *Ctx, w io.Writer, nodeID string) error {
 	for _, a := range appList.GetAllApp {
 		if a.Name == appName {
 			fmt.Fprintln(w, "приложение megapolos-gui уже есть — докатываю swarm")
-			_, err := gql(c, w, "mutation($id: String!) { updateNode(id: $id, init: false, withRebuild: false, containerIds: []) }",
+			_, err := apiQueryLong(c, c.O.Token, "mutation($id: String!) { updateNode(id: $id, init: false, withRebuild: false, containerIds: []) }",
 				map[string]any{"id": nodeID})
 			return err
 		}
@@ -547,10 +596,19 @@ func deployGUIApp(c *Ctx, w io.Writer, nodeID string) error {
 	return fmt.Errorf("образ GUI не собрался за 30 минут (последний статус: %s)", lastStatus)
 built:
 
+	// rootDomain: ядро (without_docker_swarm) требует его в createConfiguration,
+	// а базовый домен создаётся отдельным шагом base-domain позже bootstrap —
+	// поэтому здесь гарантируем его get-or-create.
+	rootDomainID, err := ensureBaseDomain(c, w)
+	if err != nil {
+		return err
+	}
+	confData := map[string]any{"name": "default", "services": []any{}}
+	if rootDomainID != "" {
+		confData["rootDomain"] = rootDomainID
+	}
 	conf, err := gql(c, w, "mutation($appId: String!, $configurationData: ConfigurationDataInput!) { createConfiguration(appId: $appId, configurationData: $configurationData) { id } }",
-		map[string]any{"appId": appID, "configurationData": map[string]any{
-			"name": "default", "services": []any{},
-		}})
+		map[string]any{"appId": appID, "configurationData": confData})
 	if err != nil {
 		return fmt.Errorf("createConfiguration: %w", err)
 	}
@@ -599,14 +657,19 @@ built:
 	if c.O.GUIDomain != "" {
 		container["domain"] = map[string]any{"domainData": map[string]any{"name": c.O.GUIDomain}}
 	}
-	if _, err := gql(c, w, "mutation($d: InstanceDataInput!, $v: ID!) { createConfiguratedInstance(instanceData: $d, appVersionId: $v) { id } }",
+	// createConfiguratedInstance и updateNode — «тяжёлые»: внутри updateNode
+	// ядро синхронно гоняет ansible (deploy_native + reconcile СУБД). Это
+	// минуты работы, поэтому вызываем apiQueryLong (60 мин, без ретраев),
+	// а не короткий apiQuery с повтором (иначе накладываются ansible-прогоны
+	// и установка падает с "context deadline exceeded").
+	if _, err := apiQueryLong(c, c.O.Token, "mutation($d: InstanceDataInput!, $v: ID!) { createConfiguratedInstance(instanceData: $d, appVersionId: $v) { id } }",
 		map[string]any{
 			"d": map[string]any{"name": appName, "containers": []any{container}},
 			"v": verParsed.CreateAppVersion.ID,
 		}); err != nil {
 		return fmt.Errorf("createConfiguratedInstance: %w", err)
 	}
-	if _, err := gql(c, w, "mutation($id: String!) { updateNode(id: $id, init: false, withRebuild: false, containerIds: []) }",
+	if _, err := apiQueryLong(c, c.O.Token, "mutation($id: String!) { updateNode(id: $id, init: false, withRebuild: false, containerIds: []) }",
 		map[string]any{"id": nodeID}); err != nil {
 		return err
 	}

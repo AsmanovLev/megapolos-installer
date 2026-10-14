@@ -13,15 +13,31 @@ import (
 	"time"
 )
 
-// apiQuery — POST GraphQL к локальному API ядра.
+// apiQuery — POST GraphQL к локальному API ядра (короткий таймаут 15с).
 // Авторизация — заголовок `token` (НЕ Authorization: Bearer).
 // Возвращает data; errors из ответа превращаются в error.
 func apiQuery(c *Ctx, token, query string, variables map[string]any) (json.RawMessage, error) {
+	return apiQueryTimeout(c, token, query, variables, 15*time.Second)
+}
+
+// apiQueryLong — вариант для ТЯЖЁЛЫХ мутаций (createConfiguratedInstance,
+// updateNode): внутри них ядро синхронно запускает ansible (deploy_native +
+// reconcile СУБД) — это минуты, а не секунды. Короткий таймаут + ретрай
+// приводил к тому, что клиент отваливался, повторял мутацию, а сервер
+// продолжал работать — накладывались ansible-прогоны (CPU ядра 60%+),
+// и установка падала с "context deadline exceeded". Здесь НЕ ретраим:
+// одну мутацию запускаем один раз, но даём ей завершиться.
+func apiQueryLong(c *Ctx, token, query string, variables map[string]any) (json.RawMessage, error) {
+	return apiQueryTimeout(c, token, query, variables, 60*time.Minute)
+}
+
+// apiQueryTimeout — базовый вызов с заданным таймаутом.
+func apiQueryTimeout(c *Ctx, token, query string, variables map[string]any, timeout time.Duration) (json.RawMessage, error) {
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(c, 15*time.Second)
+	ctx, cancel := context.WithTimeout(c, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://127.0.0.1:5100/", bytes.NewReader(body))
 	if err != nil {
