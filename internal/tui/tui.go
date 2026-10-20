@@ -275,6 +275,10 @@ func Run(o *steps.Opts, jobs int) (runErr error) {
 	form.AddDropDown("GUI", guiModes, guiIdx, nil)
 	form.AddFormItem(newMarkerField("Домен GUI (app-режим)", o.GUIDomain, 0, false, func(s string) { o.GUIDomain = strings.TrimSpace(s) }))
 	form.AddFormItem(newMarkerField("API URL для GUI", o.APIURL, 0, false, func(s string) { o.APIURL = strings.TrimSpace(s) }))
+	if o.CatalogURL == "" {
+		o.CatalogURL = steps.DefaultCatalogURL
+	}
+	form.AddFormItem(newMarkerField("Каталог приложений", o.CatalogURL, 0, false, func(s string) { o.CatalogURL = strings.TrimSpace(s) }))
 	form.AddCheckbox("HTTPS для GUI (:4443)", o.GUITLS, func(b bool) { o.GUITLS = b })
 	form.AddCheckbox("devMode (localhost, self-signed CA)", o.DevMode, func(b bool) { o.DevMode = b })
 	form.AddCheckbox("debug-логи ядра", o.Debug, func(b bool) { o.Debug = b })
@@ -930,6 +934,11 @@ func showSummary(app *tview.Application, pages *tview.Pages, o *steps.Opts, logP
 	if o.VMAPIPort != "" {
 		fmt.Fprintf(&sb, "   (внутри VM:            http://%s:5100)\n", ip)
 	}
+	catalogURL := o.CatalogURL
+	if catalogURL == "" {
+		catalogURL = steps.DefaultCatalogURL
+	}
+	fmt.Fprintf(&sb, " Каталог приложений:      [yellow]%s[-]\n", catalogURL)
 	fmt.Fprintf(&sb, " CA-сертификат:           [yellow]%s/api/ca/download[-]\n", o.APIURL)
 	if o.GUITLS {
 		sb.WriteString(" (GUI по HTTPS подписан тем же CA — импортировал CA, доверяешь и GUI)\n")

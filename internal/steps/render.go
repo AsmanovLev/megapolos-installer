@@ -6,13 +6,25 @@ import (
 	"strings"
 )
 
+// DefaultCatalogURL — публичный каталог приложений Megapolos. Записывается в
+// config/config.json ядра при установке; переопределяется --catalog-url.
+const DefaultCatalogURL = "https://catalog.megapolos.net"
+
 // RenderCoreConfig — config/config.json ядра (строгий JSON, без комментариев).
 // Порядок полей как у исторического конфига.
 //
 // networkMode/networkPool/nodeSubnetPrefix пишутся только в native-режиме —
 // чтобы без явного запроса не менять прежнее поведение ядра (swarm) и порядок
 // полей для обратной совместимости.
-func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool, networkMode, networkPool string, nodeSubnetPrefix int) string {
+//
+// catalogURL: пустая строка трактуется как DefaultCatalogURL — пустой адрес в
+// конфиге ломает App Store ("catalogUrl is not configured"). catalogServiceKey
+// нужен только для публикации манифестов (POST /apps/publish) и пишется лишь
+// при непустом значении.
+func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool, networkMode, networkPool string, nodeSubnetPrefix int, catalogURL, catalogServiceKey string) string {
+	if strings.TrimSpace(catalogURL) == "" {
+		catalogURL = DefaultCatalogURL
+	}
 	// struct с точным порядком полей
 	cfg := struct {
 		Secret            string `json:"secret"`
@@ -30,17 +42,21 @@ func RenderCoreConfig(secret, dbUser, dbPass, dbName string, debug, devMode bool
 		AllowUnauthorized bool   `json:"allowUnauthorized"`
 		NoRoot            bool   `json:"noRoot"`
 		CatalogURL        string `json:"catalogUrl"`
+		CatalogServiceKey string `json:"catalogServiceKey,omitempty"`
 	}{
-		Secret:           secret,
-		ConnectionString: fmt.Sprintf("postgres://%s:%s@localhost:5432/%s", dbUser, dbPass, dbName),
+		Secret: secret,
+		ConnectionString: fmt.Sprintf(
+			"postgres://%s:%s@localhost:5432/%s", dbUser, dbPass, dbName),
 		// registry: локальный приватный registry платформы (install.ts INSTALL REGISTRY)
-		RegistryHost:     "localhost",
-		RegistryUser:     "megapolos",
-		RegistryPassword: "megapolos",
-		Debug:            debug,
-		DevMode:          devMode,
-		PublicSchema:     false,
-		NoRoot:           true, // noRoot=true безопасно и при root-запуске
+		RegistryHost:      "localhost",
+		RegistryUser:      "megapolos",
+		RegistryPassword:  "megapolos",
+		Debug:             debug,
+		DevMode:           devMode,
+		PublicSchema:      false,
+		NoRoot:            true, // noRoot=true безопасно и при root-запуске
+		CatalogURL:        catalogURL,
+		CatalogServiceKey: strings.TrimSpace(catalogServiceKey),
 	}
 	if networkMode == "native" {
 		netSubnet := "172.20.0.0/16"

@@ -82,18 +82,30 @@ func coreCwdOK() bool {
 
 // newDoctorCtx — Ctx с пустыми Opts для диагностических вызовов.
 func newDoctorCtx() *Ctx {
+	// DBName нужен секции миграций схемы: doctor не получает Opts из main,
+	// поэтому берём имя БД из installer.cfg (или переменной окружения/дефолт).
+	dbName := os.Getenv("MEGAPOLOS_DB_NAME")
+	if dbName == "" {
+		dbName = "megapolos"
+	}
+	if b, err := os.ReadFile("/var/lib/megapolos/installer.cfg"); err == nil {
+		var cfg struct{ DBName string }
+		if json.Unmarshal(b, &cfg) == nil && cfg.DBName != "" {
+			dbName = cfg.DBName
+		}
+	}
 	return &Ctx{
 		Context: context.Background(),
 		Ex:      sys.Real{},
-		O:       &Opts{},
+		O:       &Opts{DBName: dbName},
 	}
 }
 
 // DoctorReport — структура диагностики (для --resume).
 type DoctorReport struct {
-	AllStagesDone bool
-	FirstBroken   string // ключ первой сломанной стадии (маркер есть, артефакта нет)
-	APIHealthy    bool   // API отвечает и токен валиден (иначе --resume обязан перевыпустить токен)
+	AllStagesDone  bool
+	FirstBroken    string // ключ первой сломанной стадии (маркер есть, артефакта нет)
+	APIHealthy     bool   // API отвечает и токен валиден (иначе --resume обязан перевыпустить токен)
 	Recommendation string
 }
 
@@ -148,6 +160,7 @@ func Doctor(w io.Writer) (DoctorReport, int) {
 	fmt.Fprintln(w, "[3] Конфигурация платформы")
 	checkPath(w, "/opt/megapolos (каталог установки)", "/opt/megapolos")
 	checkPath(w, "/opt/megapolos/megapolos-core/.env", "/opt/megapolos/megapolos-core/.env")
+	checkCatalog(w, "/opt/megapolos/megapolos-core/config/config.json")
 	checkPath(w, "/data/nginx/conf/init.conf", "/data/nginx/conf/init.conf")
 	checkPath(w, "/data/nginx/conf/core.conf", "/data/nginx/conf/core.conf")
 	checkPath(w, "/data/registry/docker-compose.yml", "/data/registry/docker-compose.yml")
@@ -161,15 +174,34 @@ func Doctor(w io.Writer) (DoctorReport, int) {
 	checkPort(w, "nginx TLS (4443)", "127.0.0.1:4443")
 	fmt.Fprintln(w)
 
-	// 5. API / нода
-	fmt.Fprintln(w, "[5] Megapolos Core API")
+	// 5. Схема БД: применённые миграции
+	fmt.Fprintln(w, "[5] Миграции схемы БД")
+	pending := pendingMigrations(c)
+	if len(pending) == 0 {
+		fmt.Fprintf(w, "  ✓ все миграции реестра применены (БД %s)\n", c.O.DBName)
+	} else {
+		fmt.Fprintf(w, "  ✗ неприменённых миграций: %d\n", len(pending))
+		for _, name := range pending {
+			fmt.Fprintf(w, "      - %s\n", name)
+		}
+		fmt.Fprintln(w, "  → запустите установщик: миграции догонит шаг db-migrate")
+	}
+	if err := assertSchemaSentinels(c); err != nil {
+		fmt.Fprintf(w, "  ✗ %v\n", err)
+	} else {
+		fmt.Fprintln(w, "  ✓ все ожидаемые объекты схемы на месте")
+	}
+	fmt.Fprintln(w)
+
+	// 6. API / нода
+	fmt.Fprintln(w, "[6] Megapolos Core API")
 	apiState := doctorAPIState(c)
 	report.APIHealthy = !strings.HasPrefix(apiState, "✗") && !strings.HasPrefix(apiState, "—")
 	fmt.Fprintf(w, "  %s\n", apiState)
 	fmt.Fprintln(w)
 
-	// 6. Рекомендация
-	fmt.Fprintln(w, "[6] Рекомендация")
+	// 7. Рекомендация
+
 	rec := doctorRecommend(c, report.APIHealthy)
 	report.Recommendation = rec
 	fmt.Fprintln(w, rec)
@@ -323,12 +355,12 @@ func ShowInfo(w io.Writer) int {
 
 	var parsed struct {
 		GetAllLog []struct {
-			ID           string `json:"id"`
-			Name         string `json:"name"`
-			Type         string `json:"type"`
-			NodeName     string `json:"nodeName"`
-			CreateDate   string `json:"createDate"`
-			IsClosed     bool   `json:"isClosed"`
+			ID         string `json:"id"`
+			Name       string `json:"name"`
+			Type       string `json:"type"`
+			NodeName   string `json:"nodeName"`
+			CreateDate string `json:"createDate"`
+			IsClosed   bool   `json:"isClosed"`
 		} `json:"getAllLog"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -428,6 +460,42 @@ func check(w io.Writer, name string, ok bool) {
 	} else {
 		fmt.Fprintf(w, "  ✗ %s\n", name)
 	}
+}
+
+// checkCatalog — состояние catalogUrl в config.json ядра.
+// Пустое значение означает неработающий App Store: ядро бросает
+// "catalogUrl is not configured" при любом обращении к каталогу.
+func checkCatalog(w io.Writer, path string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(w, "  ✗ Каталог приложений  (%s: %v)\n", path, err)
+		return
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		fmt.Fprintf(w, "  ✗ Каталог приложений  (%s не разобран: %v)\n", path, err)
+		return
+	}
+	url, _ := m["catalogUrl"].(string)
+	if strings.TrimSpace(url) == "" {
+		fmt.Fprintf(w, "  ✗ Каталог приложений  (catalogUrl пуст — App Store не работает)\n")
+		fmt.Fprintln(w, "      → installer --resume (шаг config:catalog проставит адрес)")
+		return
+	}
+	state := url
+	if !catalogReachable(url) {
+		// недоступность каталога не делает установку сломанной (офлайн-нода),
+		// поэтому это предупреждение, а не ✗
+		state = url + "  (недоступен — офлайн?)"
+	}
+	fmt.Fprintf(w, "  ✓ Каталог приложений  %s\n", state)
+}
+
+// catalogReachable — быстрый GET {url}/apps с таймаутом.
+func catalogReachable(url string) bool {
+	cmd := exec.Command("curl", "-fsS", "-m", "5", "-o", "/dev/null", "-A", "megapolos-installer",
+		strings.TrimSuffix(url, "/")+"/apps")
+	return cmd.Run() == nil
 }
 
 func checkPath(w io.Writer, name, path string) {

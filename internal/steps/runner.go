@@ -57,11 +57,17 @@ type Opts struct {
 	Secret           string // preflight: из существующего config.json или свежий
 	InstallDir       string
 	BundleDir        string // пусто = нет бандла
-	AptProxy         string // пусто = нет кэша
-	NpmRegistry      string // пусто = дефолтный npmjs
-	AddSelfNode      bool
-	NodeRootPassword string
-	BaseDomain       string     // базовый домен инстансов (megapolos.local); пусто = не создавать
+	// CatalogURL — адрес каталога приложений (megapolos-catalog), пишется в
+	// config/config.json ядра. Пусто = DefaultCatalogURL.
+	CatalogURL string
+	// CatalogServiceKey — shared-secret каталога для POST /apps/publish
+	// (SERVICE_KEY в .env каталога). Пусто = публикация недоступна.
+	CatalogServiceKey string
+	AptProxy          string // пусто = нет кэша
+	NpmRegistry       string // пусто = дефолтный npmjs
+	AddSelfNode       bool
+	NodeRootPassword  string
+	BaseDomain        string     // базовый домен инстансов (megapolos.local); пусто = не создавать
 	SrcKind          SourceKind // разрешённый источник (ResolveSource)
 	SrcHuman         string     // человекочитаемый вердикт источника
 	Source           string     //原始 --source 标志值 (auto|bundle|gitlab|local|custom)
@@ -151,6 +157,13 @@ func (o *Opts) ReproductionCommand() string {
 	}
 	if o.InstallDir != "/opt/megapolos" {
 		add("dir", o.InstallDir)
+	}
+	if o.CatalogURL != "" && o.CatalogURL != DefaultCatalogURL {
+		add("catalog-url", o.CatalogURL)
+	}
+	if o.CatalogServiceKey != "" {
+		// секрет: в команде воспроизведения не раскрываем
+		add("catalog-service-key", "***")
 	}
 	if o.BundleDir != "" {
 		add("bundle", o.BundleDir)

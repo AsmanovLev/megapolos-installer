@@ -27,6 +27,8 @@
 #   MEGAPOLOS_BUNDLE_DIR  — каталог оффлайн-бандла (debs/, npm-cache.tar.gz, repos/)
 #   MEGAPOLOS_ADD_SELF_NODE   — true/false/auto: добавить этот хост как ноду (auto)
 #   MEGAPOLOS_NODE_ROOT_PASSWORD — пароль root для SSH себя-ноды (megapolos)
+#   MEGAPOLOS_CATALOG_URL — адрес каталога приложений (https://catalog.megapolos.net)
+#   MEGAPOLOS_CATALOG_SERVICE_KEY — сервисный ключ каталога (SERVICE_KEY в .env каталога)
 #   MEGAPOLOS_INTERACTIVE — 0 отключает вопросы
 #
 # Скрипт идемпотентен: повторный запуск пропускает сделанное.
@@ -44,6 +46,8 @@ DB_NAME="${MEGAPOLOS_DB_NAME:-megapolos}"
 DB_USER="${MEGAPOLOS_DB_USER:-megapolos}"
 INSTALL_DIR="${MEGAPOLOS_DIR:-/opt/megapolos}"
 BUNDLE_DIR="${MEGAPOLOS_BUNDLE_DIR:-}"
+CATALOG_URL="${MEGAPOLOS_CATALOG_URL:-https://catalog.megapolos.net}"
+CATALOG_SERVICE_KEY="${MEGAPOLOS_CATALOG_SERVICE_KEY:-}"
 # автоопределение бандла: рядом со скриптом или в PWD лежат debs/ + npm cache
 if [ -z "$BUNDLE_DIR" ]; then
   for d in "$PWD" "$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"; do
@@ -360,7 +364,8 @@ if [ ! -f "$CORE_DIR/config/config.json" ]; then
   "publicSchema": false,
   "allowUnauthorized": false,
   "noRoot": true,
-  "catalogUrl": ""
+  "catalogUrl": "$CATALOG_URL"${CATALOG_SERVICE_KEY:+,
+  "catalogServiceKey": "$CATALOG_SERVICE_KEY"}
 }
 EOF
   chown "$SVC_USER:$SVC_USER" "$CORE_DIR/config/config.json"

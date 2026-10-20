@@ -8,7 +8,8 @@ import (
 
 func TestRenderCoreConfig(t *testing.T) {
 	// swarm (networkMode=""): сетевые поля не пишутся — обратная совместимость
-	s := RenderCoreConfig("SECRET", "megapolos", "PASS123", "megapolos", false, true, "", "", 24)
+	s := RenderCoreConfig("SECRET", "megapolos", "PASS123", "megapolos", false, true, "", "", 24,
+		DefaultCatalogURL, "")
 	var m map[string]any
 	if err := json.Unmarshal([]byte(s), &m); err != nil {
 		t.Fatalf("невалидный JSON: %v\n%s", err, s)
@@ -21,6 +22,39 @@ func TestRenderCoreConfig(t *testing.T) {
 	}
 	if m["devMode"] != true || m["debug"] != false || m["noRoot"] != true {
 		t.Errorf("flags: %v", m)
+	}
+	if m["catalogUrl"] != DefaultCatalogURL {
+		t.Errorf("catalogUrl: %v (ждали %s)", m["catalogUrl"], DefaultCatalogURL)
+	}
+	// пустой serviceKey не должен попадать в JSON (omitempty)
+	if _, ok := m["catalogServiceKey"]; ok {
+		t.Errorf("catalogServiceKey не должен писаться при пустом значении: %v", m["catalogServiceKey"])
+	}
+}
+
+func TestRenderCoreConfig_Catalog(t *testing.T) {
+	// явный адрес не подменяется дефолтом
+	s := RenderCoreConfig("S", "u", "p", "d", false, false, "", "", 24,
+		"http://localhost:5000", "svc-key")
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		t.Fatalf("невалидный JSON: %v\n%s", err, s)
+	}
+	if m["catalogUrl"] != "http://localhost:5000" {
+		t.Errorf("catalogUrl: %v", m["catalogUrl"])
+	}
+	if m["catalogServiceKey"] != "svc-key" {
+		t.Errorf("catalogServiceKey: %v", m["catalogServiceKey"])
+	}
+
+	// пустой адрес → дефолт (пустой catalogUrl ломает App Store)
+	s = RenderCoreConfig("S", "u", "p", "d", false, false, "", "", 24, "  ", "")
+	m = map[string]any{}
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		t.Fatalf("невалидный JSON: %v\n%s", err, s)
+	}
+	if m["catalogUrl"] != DefaultCatalogURL {
+		t.Errorf("пустой адрес должен подменяться дефолтом, получили %v", m["catalogUrl"])
 	}
 }
 
