@@ -938,7 +938,9 @@ func showSummary(app *tview.Application, pages *tview.Pages, o *steps.Opts, logP
 	if catalogURL == "" {
 		catalogURL = steps.DefaultCatalogURL
 	}
-	fmt.Fprintf(&sb, " Каталог приложений:      [yellow]%s[-]\n", catalogURL)
+	fmt.Fprintf(&sb, " Каталог приложений:      [yellow]%s[-] (remote, вкладка по умолчанию)\n", catalogURL)
+	sb.WriteString(" Локальное хранилище:     Local App Store (создаётся ядром при старте:\n")
+	sb.WriteString("                          App Store → вкладка с иконкой Storage)\n")
 	fmt.Fprintf(&sb, " CA-сертификат:           [yellow]%s/api/ca/download[-]\n", o.APIURL)
 	if o.GUITLS {
 		sb.WriteString(" (GUI по HTTPS подписан тем же CA — импортировал CA, доверяешь и GUI)\n")

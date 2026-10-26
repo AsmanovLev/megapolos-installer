@@ -123,6 +123,14 @@ var migrations = []migration{
 		Sentinel:    "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='catalog' LIMIT 1",
 		ExpectTable: "catalog",
 	},
+	{
+		// Тип источника каталога: remote | local. Без этой колонки ядро не
+		// поднимает Local App Store (seedCatalogs ищет kind='local'), поэтому
+		// шаг db-migrate обязан её создать и проверить в финальной сверке.
+		Name:         "038-add-catalog-kind.sql",
+		Sentinel:     colSentinel("catalog", "kind"),
+		ExpectColumn: "catalog.kind",
+	},
 }
 
 // colSentinel — SQL-проверка существования колонки.

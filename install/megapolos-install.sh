@@ -336,15 +336,121 @@ sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='$DB_NAME'" 
   || sudo -u postgres createdb -O "$DB_USER" "$DB_NAME"
 TABLES="$(sudo -u postgres psql -d "$DB_NAME" -tAc \
   "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
+DUMP_LOADED=0
 if [ "$TABLES" -eq 0 ]; then
   log "Заливаю дамп newpostgresql.sql"
   # дамп снят pg_dump 18: выкидываем \restrict/\unrestrict и SET transaction_timeout (PG17+)
   sed -e '/^\\restrict/d' -e '/^\\unrestrict/d' -e '/^SET transaction_timeout/d' \
     "$INSTALL_DIR/megapolos-core/install/newpostgresql.sql" \
     | sudo -u postgres psql -q -d "$DB_NAME" >/dev/null
+  DUMP_LOADED=1
   echo "Дамп загружен"
 else
   echo "В БД уже $TABLES таблиц, дамп не заливаю"
+fi
+
+# ---------------- 9b. инкрементальные миграции схемы ----------------
+# Реестр install/0NN-*.sql — тот же набор, что применяет Go-установщик
+# (internal/steps/migrations.go). Он нужен и здесь, потому что legacy-скрипт
+# умел только заливать снапшот:
+#   * дамп залит на пустую БД → объекты миграций уже в снапшоте, помечаем их
+#     применёнными (source=dump), чтобы повторный запуск их не выполнял;
+#   * БД уже существует (повторный запуск / старый стенд) → неприменённые
+#     миграции догоняются. Без этого, например, отсутствует колонка
+#     catalog.kind, и ядро молча не создаёт вкладку «Local App Store»
+#     (seedCatalogs падает в catch и только логирует ошибку).
+#
+# Файлы 026/027/029/030/031/032/033/035/036/037/038 не идемпотентны, поэтому
+# перед выполнением проверяется сентинел — «объект уже есть». Сентинелы
+# синхронизированы с internal/steps/migrations.go.
+MIG_TABLE=megapolos_schema_migration
+CORE_INSTALL="$INSTALL_DIR/megapolos-core/install"
+
+psql_q() { sudo -u postgres psql -d "$DB_NAME" -X -A -t -c "$1"; }
+
+sudo -u postgres psql -q -d "$DB_NAME" -c \
+  "CREATE TABLE IF NOT EXISTS $MIG_TABLE (name text PRIMARY KEY, applied_at timestamp(6) NOT NULL DEFAULT now(), source text NOT NULL)" >/dev/null
+
+mig_recorded() {
+  [ "$(psql_q "SELECT 1 FROM $MIG_TABLE WHERE name = '$1' LIMIT 1")" = "1" ]
+}
+
+mig_mark() { # $1=имя файла $2=источник (dump|sql|sentinel)
+  sudo -u postgres psql -q -d "$DB_NAME" -c \
+    "INSERT INTO $MIG_TABLE (name, source) VALUES ('$1', '$2') ON CONFLICT (name) DO NOTHING" >/dev/null
+}
+
+# mig_sentinel — SQL «объект миграции уже существует»; пусто = миграция данных,
+# написанная идемпотентно (028 — INSERT ... WHERE NOT EXISTS,
+# 034-dedupe — DELETE + CREATE UNIQUE INDEX IF NOT EXISTS).
+mig_sentinel() {
+  case "$1" in
+    026-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='app' AND column_name='infrastructure_type' LIMIT 1" ;;
+    027-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='app' AND column_name='system' LIMIT 1" ;;
+    029-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='repository' AND column_name='is_private' LIMIT 1" ;;
+    030-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='app_version' AND column_name='is_zero' LIMIT 1" ;;
+    031-*) echo "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='app_module_version' LIMIT 1" ;;
+    032-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='configuration' AND column_name='is_default' LIMIT 1" ;;
+    033-add-internal-network-connection.sql) echo "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='internal_network_connection' LIMIT 1" ;;
+    033-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='configuration' AND column_name='root_domain_id' LIMIT 1" ;;
+    034-add-node-metric.sql) echo "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='node_metric' LIMIT 1" ;;
+    035-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='node' AND column_name='public_address' LIMIT 1" ;;
+    036-*) echo "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='certificate' LIMIT 1" ;;
+    037-*) echo "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='catalog' LIMIT 1" ;;
+    038-*) echo "SELECT 1 FROM information_schema.columns WHERE table_name='catalog' AND column_name='kind' LIMIT 1" ;;
+    *) echo "" ;;
+  esac
+}
+
+# mig_in_registry — только файлы реестра (026+). 001..025 целиком содержатся в
+# newpostgresql.sql, НЕ идемпотентны и не должны выполняться скриптом: на
+# существующей БД они упали бы на «already exists».
+mig_in_registry() {
+  case "$1" in
+    02[6-9]-*|03[0-9]-*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ -d "$CORE_INSTALL" ]; then
+  if [ "$DUMP_LOADED" -eq 1 ]; then
+    # Снапшот содержит объекты миграций реестра — файлы не выполняем.
+    for f in "$CORE_INSTALL"/[0-9][0-9][0-9]-*.sql; do
+      [ -e "$f" ] || continue
+      name="$(basename "$f")"
+      mig_in_registry "$name" || continue
+      mig_mark "$name" dump
+    done
+    echo "Снапшот: миграции помечены применёнными (source=dump)"
+  else
+    MIG_APPLIED=0; MIG_SKIPPED=0
+    for f in "$CORE_INSTALL"/[0-9][0-9][0-9]-*.sql; do
+      [ -e "$f" ] || continue
+      name="$(basename "$f")"
+      mig_in_registry "$name" || continue
+      mig_recorded "$name" && continue
+      sentinel="$(mig_sentinel "$name")"
+      if [ -n "$sentinel" ] && [ "$(psql_q "$sentinel")" = "1" ]; then
+        mig_mark "$name" sentinel
+        MIG_SKIPPED=$((MIG_SKIPPED + 1))
+        continue
+      fi
+      echo "  применяю $name"
+      sudo -u postgres psql -v ON_ERROR_STOP=1 -q -d "$DB_NAME" -f "$f" >/dev/null
+      mig_mark "$name" sql
+      MIG_APPLIED=$((MIG_APPLIED + 1))
+    done
+    echo "Миграции: выполнено $MIG_APPLIED, помечено по сентинелу $MIG_SKIPPED"
+  fi
+
+  # Проверка «Local App Store будет создан»: без catalog.kind сид ядра молча
+  # не создаёт локальную вкладку — сообщаем об этом явно.
+  if [ "$(psql_q "SELECT 1 FROM information_schema.columns WHERE table_name='catalog' AND column_name='kind' LIMIT 1")" != "1" ]; then
+    warn "колонка catalog.kind отсутствует — вкладка «Local App Store» не появится"
+    warn "→ sudo -u postgres psql -d $DB_NAME -f $CORE_INSTALL/038-add-catalog-kind.sql"
+  fi
+else
+  warn "каталог $CORE_INSTALL не найден — миграции схемы не применялись"
 fi
 
 # ---------------- 10. core ----------------
@@ -494,4 +600,9 @@ echo "  GUI:   http://<ip-vm>/"
 echo "  API:   http://<ip-vm>:5100"
 echo "  Токен: /root/megapolos-token.txt"
 [ "$ADD_SELF_NODE" = "true" ] && echo "  Нода:  $(hostname) → 127.0.0.1 (root / $NODE_ROOT_PASSWORD)"
+# App Store: две вкладки. remote задаётся сидом ядра из config.json:catalogUrl,
+# local (app_export) создаётся сидом ядра сам — параметров у него нет.
+echo "  Каталог: $CATALOG_URL (remote, вкладка по умолчанию)"
+echo "          Local App Store — локальное хранилище шаблонов, создаётся ядром"
+echo "          при старте (App Store → вкладка с иконкой Storage)."
 echo "  Логи:  journalctl -u megapolos-core -f"

@@ -910,6 +910,17 @@ func main() {
 		fmt.Println()
 	}
 	fmt.Printf("  API:    %s\n", opts.APIURL)
+	// Каталоги App Store: remote задаётся флагом и сидится ядром как вкладка
+	// по умолчанию; Local App Store (app_export) создаётся сидом ядра всегда,
+	// параметров не имеет — важно сказать это в итоговой сводке, иначе
+	// пользователь не знает, что вторая вкладка должна появиться.
+	remoteCatalog := opts.CatalogURL
+	if strings.TrimSpace(remoteCatalog) == "" {
+		remoteCatalog = steps.DefaultCatalogURL
+	}
+	fmt.Printf("  Каталог: %s (remote, вкладка по умолчанию)\n", remoteCatalog)
+	fmt.Println("          Local App Store — локальное хранилище шаблонов, создаётся")
+	fmt.Println("          ядром при старте (App Store → вкладка с иконкой Storage).")
 	fmt.Printf("  CA:     %s/api/ca/download (скачать и добавить в доверенные)\n", opts.APIURL)
 	if opts.Token != "" {
 		fmt.Printf("  Токен:  %s\n", opts.Token)
