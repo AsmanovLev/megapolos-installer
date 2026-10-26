@@ -3,6 +3,7 @@ package steps
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -464,6 +465,7 @@ func All(o *Opts) []Step {
 		npmStep("npm:core", coreDir, "megapolos-core", "package-lock.core.json", "install"),
 		dbMigrateStep(coreDir),
 		coreConfigStep(coreDir),
+		catalogConfigStep(coreDir),
 		tokenStep(),
 	}
 	if o.NetworkMode != "native" {
@@ -697,43 +699,24 @@ func cloneStep(repo, dir string) Step {
 }
 
 // dbMigrateStep: схема БД → соответствие текущим entities.
-// Дамп в репо (install/newpostgresql.sql) отстаёт от кода (пример: repository.is_private);
-// миграций в платформе нет → mikro-orm schema:update. Снимает legacy-дефолт
-// image.status (нативный enum из дампа) — иначе DROP TYPE падает 2BP01.
-// Толерантен к прочим частичным ошибкам (остальные операции применяются).
+// Дамп в репо (install/newpostgresql.sql) отстаёт от кода (пример: repository.is_private),
+// а инкрементальные миграции install/0NN-*.sql до этого не применял никто —
+// mikro-orm schema:update не создаёт M2M-pivot. Теперь миграции применяет
+// реестр (migrations.go); неполная схема после шага — фатальная ошибка.
 func dbMigrateStep(coreDir string) StepFunc {
 	return StepFunc{
 		N: "db-migrate", D: []string{"db", "npm:core", "config:core"},
+		// Пропускаем шаг только если (а) нет дрейфа «дамп отстаёт от entities»
+		// И (б) в реестре миграций нет неприменённых. Раньше проверялся один
+		// маркер (repository.is_private), из-за чего расхождения (configuration
+		// .is_default, таблицы хэш-модели версий из миграции 031) проскакивали
+		// и падали уже на createConfiguration / createAppVersion.
 		DetectF: func(c *Ctx) (bool, string) {
-			// Проверяем НАБОР маркеров дрейфа «дамп отстаёт от entities»:
-			// пропускаем schema:update только если присутствуют ВСЕ ожидаемые
-			// колонки/таблицы. Раньше проверялся один маркер (repository.is_private),
-			// из-за чего другие расхождения (напр. configuration.is_default,
-			// таблицы хэш-модели версий из миграции 031) молча проскакивали и
-			// падали уже на createConfiguration / работе с версиями приложений.
-			required := []struct{ table, column string }{
-				{"repository", "is_private"},
-				{"configuration", "is_default"},
-				{"configuration", "root_domain_id"},
-				{"app_version", "hash"}, // миграция 031 (хэш-модель версий)
+			if err := assertSchemaSentinels(c); err != nil {
+				return false, err.Error()
 			}
-			for _, r := range required {
-				q := fmt.Sprintf("sudo -u postgres psql -d %s -tAc \"SELECT 1 FROM information_schema.columns WHERE table_name='%s' AND column_name='%s'\" | grep -q 1", c.O.DBName, r.table, r.column)
-				if !outOK(c, q) {
-					return false, fmt.Sprintf("нет колонки %s.%s", r.table, r.column)
-				}
-			}
-			// Таблицы, добавляемые миграцией 031 (M2M-pivot schema:update не создаёт).
-			requiredTables := []string{
-				"app_module_version",
-				"app_version_parents",
-				"app_module_version_parents",
-			}
-			for _, t := range requiredTables {
-				q := fmt.Sprintf("sudo -u postgres psql -d %s -tAc \"SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='%s'\" | grep -q 1", c.O.DBName, t)
-				if !outOK(c, q) {
-					return false, fmt.Sprintf("нет таблицы %s", t)
-				}
+			if pending := pendingMigrations(c); len(pending) > 0 {
+				return false, "неприменённых миграций: " + strings.Join(pending, ", ")
 			}
 			return true, "схема актуальна"
 		},
@@ -757,7 +740,18 @@ func dbMigrateStep(coreDir string) StepFunc {
 			}, w); err != nil {
 				fmt.Fprintf(w, "WARN: schema:update завершился с ошибкой (часть операций могла примениться): %v\n", err)
 			}
-			return nil
+			// Инкрементальные миграции install/0NN-*.sql: schema:update не создаёт
+			// M2M-pivot (app_module_version и др.), а раньше их не применял никто.
+			// Реестр (migrations.go) пропускает уже применённые (и проверяет,
+			// что их объекты физически на месте), остальные выполняет по порядку.
+			if err := applyPendingMigrations(c, w, coreDir); err != nil {
+				return fmt.Errorf("миграции схемы: %w", err)
+			}
+			// fail-fast: bootstrap сразу после этого шага пишет AppModuleVersion
+			// (createAppVersion). На неполной схеме это «отношение … не существует»
+			// уже в середине деплоя GUI — лучше упасть здесь и с понятной причиной.
+			// Проверяются все объекты реестра миграций.
+			return assertSchemaSentinels(c)
 		},
 	}
 }
@@ -802,9 +796,15 @@ func dbStep(coreDir string) StepFunc {
 				fmt.Fprintf(w, "заливаю дамп %s\n", dump)
 				// дамп снят pg_dump 18: выкидываем \restrict/\unrestrict и SET transaction_timeout (PG17+)
 				sed := `sed -e '/^\\restrict/d' -e '/^\\unrestrict/d' -e '/^SET transaction_timeout/d' `
-				return sh(c, w, sed+dump+" | sudo -u postgres psql -q -d "+c.O.DBName+" >/dev/null")
+				if err := sh(c, w, sed+dump+" | sudo -u postgres psql -q -d "+c.O.DBName+" >/dev/null"); err != nil {
+					return err
+				}
+				// Снапшот содержит объекты миграций реестра — помечаем их
+				// применёнными, чтобы db-migrate не пытался выполнять
+				// неидемпотентные файлы (026/027/029/030/031) повторно.
+				return markAllMigrationsFromDump(c, w)
 			}
-			fmt.Fprintf(w, "в БД уже %s таблиц, дамп не заливаю\n", tables)
+			fmt.Fprintf(w, "в БД уже %s таблиц, дамп не заливаю (миграции догонит db-migrate)\n", tables)
 			return nil
 		},
 	}
@@ -945,8 +945,88 @@ func coreConfigStep(coreDir string) Step {
 		RunF: func(c *Ctx, w io.Writer) error {
 			return writeFile(c, w, filepath.Join(coreDir, "config", "config.json"),
 				RenderCoreConfig(c.O.Secret, c.O.DBUser, c.O.DBPass, c.O.DBName, c.O.Debug, c.O.DevMode,
-					c.O.NetworkMode, c.O.NetworkPool, c.O.NodeSubnetPrefix),
+					c.O.NetworkMode, c.O.NetworkPool, c.O.NodeSubnetPrefix,
+					c.O.CatalogURL, c.O.CatalogServiceKey),
 				0o600, c.O.SvcUser+":"+c.O.SvcUser)
+		},
+	}
+}
+
+// catalogConfigStep: досыпает адрес каталога в уже существующий config.json.
+//
+// DetectF шага config:core пропускает шаг, если файл есть, поэтому установки,
+// сделанные до появления catalogUrl, остались с "catalogUrl": "". Здесь мы
+// аккуратно правим ТОЛЬКО catalogUrl (и catalogServiceKey, если задан ключ),
+// не трогая secret/connectionString и остальные поля: полная перезапись
+// сломала бы живую БД (пароль роли) и токены.
+func catalogConfigStep(coreDir string) Step {
+	cfgPath := filepath.Join(coreDir, "config", "config.json")
+	return StepFunc{
+		N: "config:catalog", D: []string{"config:core"},
+		DetectF: func(c *Ctx) (bool, string) {
+			cur, err := os.ReadFile(cfgPath)
+			if err != nil {
+				return false, ""
+			}
+			var m map[string]any
+			if err := json.Unmarshal(cur, &m); err != nil {
+				// Невалидный JSON не трогаем — пусть падает/чинится иначе.
+				return false, ""
+			}
+			v, _ := m["catalogUrl"].(string)
+			if strings.TrimSpace(v) == "" {
+				return false, ""
+			}
+			if c.O.CatalogServiceKey != "" {
+				k, _ := m["catalogServiceKey"].(string)
+				if k != c.O.CatalogServiceKey {
+					return false, ""
+				}
+			}
+			return true, "catalogUrl уже задан: " + v
+		},
+		RunF: func(c *Ctx, w io.Writer) error {
+			cur, err := os.ReadFile(cfgPath)
+			if err != nil {
+				return err
+			}
+			var m map[string]any
+			if err := json.Unmarshal(cur, &m); err != nil {
+				return fmt.Errorf("config.json не разобран (%s): %w", cfgPath, err)
+			}
+			old, _ := m["catalogUrl"].(string)
+			if strings.TrimSpace(old) != "" && c.O.CatalogServiceKey == "" {
+				fmt.Fprintf(w, "catalogUrl уже задан (%s) — не перезаписываю\n", old)
+				return nil
+			}
+			// Бэкап: правка рабочего конфига должна быть откатываемой.
+			if err := sh(c, w, fmt.Sprintf("cp -p %s %s.bak", cfgPath, cfgPath)); err != nil {
+				return err
+			}
+			url := c.O.CatalogURL
+			if strings.TrimSpace(url) == "" {
+				url = DefaultCatalogURL
+			}
+			if strings.TrimSpace(old) != "" {
+				url = old // непустой пользовательский адрес приоритетнее
+			}
+			m["catalogUrl"] = url
+			if c.O.CatalogServiceKey != "" {
+				m["catalogServiceKey"] = c.O.CatalogServiceKey
+			}
+			b, err := json.MarshalIndent(m, "", "  ")
+			if err != nil {
+				return err
+			}
+			if err := writeFile(c, w, cfgPath, string(b)+"\n", 0o600, c.O.SvcUser+":"+c.O.SvcUser); err != nil {
+				return err
+			}
+			fmt.Fprintf(w, "catalogUrl=%s\n", url)
+			// Ядро читает конфиг на старте — применяем сразу.
+			if outOK(c, "systemctl is-active -q megapolos-core") {
+				return sh(c, w, "systemctl restart megapolos-core")
+			}
+			return nil
 		},
 	}
 }

@@ -99,6 +99,17 @@ done
 
 echo "== дамп БД и установщики"
 cp "$SRC_WS/megapolos-core/install/newpostgresql.sql" "$BUNDLE/pg/"
+# Инкрементальные миграции реестра (026+). migrationPath() установщика ищет их
+# сначала в <bundle>/pg/migrations, затем в клоне ядра — копия в бандле
+# гарантирует применение, даже если клон ядра недоступен или старше бандла.
+# 001..025 не копируем: они целиком есть в newpostgresql.sql и неидемпотентны,
+# отдельно их выполнять нельзя (реестр migrations.go начинается с 026).
+mkdir -p "$BUNDLE/pg/migrations"
+for f in "$SRC_WS/megapolos-core/install"/02[6-9]-*.sql "$SRC_WS/megapolos-core/install"/03[0-9]-*.sql; do
+  [ -e "$f" ] || continue
+  cp "$f" "$BUNDLE/pg/migrations/"
+done
+echo "   миграций в бандле: $(ls -1 "$BUNDLE/pg/migrations" 2>/dev/null | wc -l)"
 # входная точка бандла = умный bootstrap (оффлайн-first: без сети при запуске из смонтированного бандла)
 cp "$WORKSPACE/install/bootstrap.sh" "$BUNDLE/install.sh"
 chmod +x "$BUNDLE/install.sh"
@@ -128,6 +139,20 @@ megapolos-gui:  $GUI_VER
 Установка на чистую машину:
   sudo mount -o ro,loop megapolos-bundle.sqfs /mnt
   sudo /mnt/installer            # TUI; или --no-tui --yes для headless
+
+App Store после установки (две вкладки, настраивать вручную не нужно):
+  1) Megapolos (remote)      https://catalog.megapolos.net — вкладка по умолчанию,
+                             адрес задаётся сидом ядра из config.json:catalogUrl
+                             (флаг установщика --catalog-url).
+  2) Local App Store (local) локальное хранилище шаблонов в таблице app_export.
+                             Создаётся сидом ядра при каждом старте, если записи
+                             kind='local' ещё нет. Адреса у него нет; шаблоны
+                             загружаются через "Upload App Config" в самой вкладке.
+
+  Требуется миграция схемы install/038-add-catalog-kind.sql (колонка catalog.kind
+  + индекс catalog_one_local). Установщик применяет её на шаге db-migrate;
+  файлы миграций лежат в pg/migrations этого бандла.
+  NB: на офлайн-стенде основной каталог недоступен — пользуйтесь Local App Store.
 EOF
 
 echo "== пакую bundle/megapolos-bundle.sqfs (zstd)"

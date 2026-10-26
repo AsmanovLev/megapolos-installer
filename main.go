@@ -152,28 +152,30 @@ func saveInstallerCfg(opts *steps.Opts) {
 		return
 	}
 	cfg := struct {
-		Source           string
-		CoreRef          string
-		GUIRef           string
-		APIURL           string
-		GUI              bool
-		GUIApp           bool
-		GUIDomain        string
-		GUITLS           bool
-		Standalone       bool
-		NetworkMode      string
-		NetworkPool      string
-		NodeSubnetPrefix int
-		BaseDomain       string
-		RepoPackages     bool
-		ForceCompat      bool
-		DevMode          bool
-		DBName           string
-		DBUser           string
-		InstallDir       string
-		NodeRootPass     string
-		Swap             string
-		HostIP           string
+		Source            string
+		CoreRef           string
+		GUIRef            string
+		APIURL            string
+		CatalogURL        string
+		CatalogServiceKey string
+		GUI               bool
+		GUIApp            bool
+		GUIDomain         string
+		GUITLS            bool
+		Standalone        bool
+		NetworkMode       string
+		NetworkPool       string
+		NodeSubnetPrefix  int
+		BaseDomain        string
+		RepoPackages      bool
+		ForceCompat       bool
+		DevMode           bool
+		DBName            string
+		DBUser            string
+		InstallDir        string
+		NodeRootPass      string
+		Swap              string
+		HostIP            string
 		// Секреты: нужны, чтобы восстановиться после потери config.json
 		// (например удалили /opt/megapolos) при живой БД — иначе новый
 		// пароль роли ≠ пароль в БД → 28P01.
@@ -182,13 +184,15 @@ func saveInstallerCfg(opts *steps.Opts) {
 	}{
 		Source: opts.Source, CoreRef: opts.CoreRef, GUIRef: opts.GUIRef,
 		APIURL: opts.APIURL, GUI: opts.GUI, GUIApp: opts.GUIApp,
-		GUIDomain: opts.GUIDomain, GUITLS: opts.GUITLS, Standalone: opts.Standalone,
+		CatalogURL: opts.CatalogURL, CatalogServiceKey: opts.CatalogServiceKey,
+		GUIDomain: opts.GUIDomain, GUITLS: opts.GUITLS,
+		Standalone: opts.Standalone,
 		NetworkMode: opts.NetworkMode, NetworkPool: opts.NetworkPool,
 		NodeSubnetPrefix: opts.NodeSubnetPrefix,
 		BaseDomain:       opts.BaseDomain, RepoPackages: opts.RepoPackages,
-		ForceCompat: opts.ForceCompat, DevMode: opts.DevMode,
-		DBName: opts.DBName, DBUser: opts.DBUser,
-		InstallDir: opts.InstallDir, NodeRootPass: opts.NodeRootPassword,
+		ForceCompat:      opts.ForceCompat, DevMode: opts.DevMode,
+		DBName:           opts.DBName, DBUser: opts.DBUser,
+		InstallDir:       opts.InstallDir, NodeRootPass: opts.NodeRootPassword,
 		Swap: opts.Swap, HostIP: opts.HostIP,
 		Secret: opts.Secret, DBPass: opts.DBPass,
 	}
@@ -236,6 +240,8 @@ func loadInstallerCfg(explicit map[string]bool) map[string]string {
 		"NodeRootPass": "node-root-password", "Swap": "swap", "HostIP": "host-ip",
 		"NetworkMode": "network-mode", "NetworkPool": "network-pool",
 		"NodeSubnetPrefix": "node-subnet-prefix",
+		"CatalogURL":        "catalog-url",
+		"CatalogServiceKey": "catalog-service-key",
 	}
 	out := make(map[string]string)
 	for jsonKey, v := range cfg {
@@ -407,6 +413,8 @@ func main() {
 		source       = flag.String("source", envOr("MEGAPOLOS_SOURCE", "auto"), "bundle | gitlab | local | auto | <URL или путь к репо>")
 		sourceCustom = flag.String("source-custom", envOr("MEGAPOLOS_SOURCE_CUSTOM", ""), "URL/путь источника при --source custom (или впиши прямо в --source)")
 		apiURL       = flag.String("api-url", envOr("MEGAPOLOS_API_URL", ""), "URL API для GUI (пусто = http://<lan-ip>:5100)")
+		catalogURL   = flag.String("catalog-url", envOr("MEGAPOLOS_CATALOG_URL", steps.DefaultCatalogURL), "адрес каталога приложений (megapolos-catalog), пишется в config.json ядра")
+		catalogKey   = flag.String("catalog-service-key", envOr("MEGAPOLOS_CATALOG_SERVICE_KEY", ""), "сервисный ключ каталога (SERVICE_KEY в .env каталога)")
 		guiOn        = flag.Bool("gui", envOr("MEGAPOLOS_GUI", "true") != "false", "ставить GUI на эту машину (nginx :8080)")
 		guiApp       = flag.Bool("gui-app", envOr("MEGAPOLOS_GUI_APP", "false") == "true", "GUI как приложение платформы (домен+серты), а не статический nginx")
 		guiDomain    = flag.String("gui-domain", envOr("MEGAPOLOS_GUI_DOMAIN", ""), "домен GUI-приложения (пусто = gui.<base-domain>)")
@@ -620,6 +628,7 @@ func main() {
 
 	if *printCmd {
 		fmt.Println(buildCommandLine(*coreRef, *guiRef, *source, *sourceCustom, *apiURL,
+			*catalogURL, *catalogKey,
 			*guiDomain, *dbName, *dbUser, *dir, *bundle, *selfNode, "***", *baseDomain, *swapMode, *hostIP,
 			*networkMode, *networkPool, strconv.Itoa(*subnetPrefix),
 			*guiOn, *guiApp, *guiTLS, *standalone, *wipe, *resetDB, *repoPackages, *forceCompat,
@@ -757,46 +766,48 @@ func main() {
 	}
 
 	opts := &steps.Opts{
-		GitBase:          gitBase,
-		Source:           *source,
-		CoreRef:          *coreRef,
-		GUIRef:           *guiRef,
-		APIURL:           apiURLVal,
-		DevMode:          *devMode,
-		Debug:            *debug,
-		DBName:           *dbName,
-		DBUser:           *dbUser,
-		DBPass:           dbPass,
-		Secret:           secret,
-		InstallDir:       *dir,
-		BundleDir:        bundleDir,
-		AptProxy:         aptProxy,
-		NpmRegistry:      npmRegistry,
-		NodeRootPassword: *nodePass,
-		BaseDomain:       *baseDomain,
-		GUI:              *guiOn || *guiApp,
-		GUIApp:           *guiApp,
-		GUIDomain:        guiDomainVal,
-		GUITLS:           *guiTLS,
-		Standalone:       *standalone,
-		Wipe:             *wipe,
-		ResetDB:          *resetDB,
-		RepoPackages:     *repoPackages,
-		ForceCompat:      *forceCompat,
-		LANIP:            lanIP,
-		Swap:             *swapMode,
-		SvcUser:          "megapolos",
-		HostIP:           hostIPVal,
-		NetworkMode:      *networkMode,
-		NetworkPool:      *networkPool,
-		NodeSubnetPrefix: *subnetPrefix,
-		SrcKind:          src.Kind,
-		SrcHuman:         src.Human,
-		Hostname:         hostname,
-		NodeMajor:        18,
-		PgMajor:          16,
-		Resume:           *resume,
-		RetryStage:       *retryStage,
+		GitBase:           gitBase,
+		Source:            *source,
+		CoreRef:           *coreRef,
+		GUIRef:            *guiRef,
+		APIURL:            apiURLVal,
+		CatalogURL:        strings.TrimSpace(*catalogURL),
+		CatalogServiceKey: strings.TrimSpace(*catalogKey),
+		DevMode:           *devMode,
+		Debug:             *debug,
+		DBName:            *dbName,
+		DBUser:            *dbUser,
+		DBPass:            dbPass,
+		Secret:            secret,
+		InstallDir:        *dir,
+		BundleDir:         bundleDir,
+		AptProxy:          aptProxy,
+		NpmRegistry:       npmRegistry,
+		NodeRootPassword:  *nodePass,
+		BaseDomain:        *baseDomain,
+		GUI:               *guiOn || *guiApp,
+		GUIApp:            *guiApp,
+		GUIDomain:         guiDomainVal,
+		GUITLS:            *guiTLS,
+		Standalone:        *standalone,
+		Wipe:              *wipe,
+		ResetDB:           *resetDB,
+		RepoPackages:      *repoPackages,
+		ForceCompat:       *forceCompat,
+		LANIP:             lanIP,
+		Swap:              *swapMode,
+		SvcUser:           "megapolos",
+		HostIP:            hostIPVal,
+		NetworkMode:       *networkMode,
+		NetworkPool:       *networkPool,
+		NodeSubnetPrefix:  *subnetPrefix,
+		SrcKind:           src.Kind,
+		SrcHuman:          src.Human,
+		Hostname:          hostname,
+		NodeMajor:         18,
+		PgMajor:           16,
+		Resume:            *resume,
+		RetryStage:        *retryStage,
 	}
 	// hostfwd-порты имеют смысл только в user-net (в bridge VM доступна по LAN-IP)
 	if vmEnv["NET"] != "bridge" {
@@ -899,6 +910,17 @@ func main() {
 		fmt.Println()
 	}
 	fmt.Printf("  API:    %s\n", opts.APIURL)
+	// Каталоги App Store: remote задаётся флагом и сидится ядром как вкладка
+	// по умолчанию; Local App Store (app_export) создаётся сидом ядра всегда,
+	// параметров не имеет — важно сказать это в итоговой сводке, иначе
+	// пользователь не знает, что вторая вкладка должна появиться.
+	remoteCatalog := opts.CatalogURL
+	if strings.TrimSpace(remoteCatalog) == "" {
+		remoteCatalog = steps.DefaultCatalogURL
+	}
+	fmt.Printf("  Каталог: %s (remote, вкладка по умолчанию)\n", remoteCatalog)
+	fmt.Println("          Local App Store — локальное хранилище шаблонов, создаётся")
+	fmt.Println("          ядром при старте (App Store → вкладка с иконкой Storage).")
 	fmt.Printf("  CA:     %s/api/ca/download (скачать и добавить в доверенные)\n", opts.APIURL)
 	if opts.Token != "" {
 		fmt.Printf("  Токен:  %s\n", opts.Token)
@@ -913,7 +935,7 @@ func main() {
 	fmt.Println("  Логи:   journalctl -u megapolos-core -f")
 }
 
-func buildCommandLine(coreRef, guiRef, source, sourceCustom, apiURL, guiDomain, dbName, dbUser, dir, bundle, selfNode, nodePass, baseDomain, swapMode, hostIP, networkMode, networkPool, subnetPrefix string, guiOn, guiApp, guiTLS, standalone, wipe, resetDB, repoPackages, forceCompat, devMode, debug, yes, noTUI bool) string {
+func buildCommandLine(coreRef, guiRef, source, sourceCustom, apiURL, catalogURL, catalogKey, guiDomain, dbName, dbUser, dir, bundle, selfNode, nodePass, baseDomain, swapMode, hostIP, networkMode, networkPool, subnetPrefix string, guiOn, guiApp, guiTLS, standalone, wipe, resetDB, repoPackages, forceCompat, devMode, debug, yes, noTUI bool) string {
 	var args []string
 	add := func(name, val string) {
 		if val == "" || val == "false" {
@@ -944,6 +966,12 @@ func buildCommandLine(coreRef, guiRef, source, sourceCustom, apiURL, guiDomain, 
 	}
 	if apiURL != "" {
 		add("api-url", apiURL)
+	}
+	if catalogURL != "" && catalogURL != steps.DefaultCatalogURL {
+		add("catalog-url", catalogURL)
+	}
+	if catalogKey != "" {
+		add("catalog-service-key", "***")
 	}
 	addb("gui", guiOn)
 	addb("gui-app", guiApp)
