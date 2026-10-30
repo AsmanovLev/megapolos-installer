@@ -435,7 +435,10 @@ func main() {
 		baseDomain   = flag.String("base-domain", envOr("MEGAPOLOS_BASE_DOMAIN", "megapolos.local"), "базовый домен инстансов (пусто = не создавать)")
 		swapMode     = flag.String("swap", envOr("MEGAPOLOS_SWAP", "auto"), "swap: auto (только при RAM<8G) | force | skip")
 		networkMode  = flag.String("network-mode", envOr("MEGAPOLOS_NETWORK_MODE", "native"), "рантайм сети: native (без Docker Swarm, целевая модель) | swarm")
-		networkPool  = flag.String("network-pool", envOr("MEGAPOLOS_NETWORK_POOL", ""), "F1: пул подсетей нод кластера (напр. 172.30.0.0/16; пусто = одна нода)")
+		// F7: пример пула не должен быть диапазоном, типичным для LAN облачных ВМ
+		// (172.30.0.0/16) — иначе установка по подсказке приводит к конфликту H11
+		// (см. md/megapolos-node-update.md).
+		networkPool = flag.String("network-pool", envOr("MEGAPOLOS_NETWORK_POOL", ""), "F1: пул подсетей нод кластера (напр. 10.99.0.0/16; пусто = одна нода); не должен пересекаться с LAN-сетями нод")
 		subnetPrefix = flag.Int("node-subnet-prefix", envInt("MEGAPOLOS_NODE_SUBNET_PREFIX", 24), "F1: префикс подсети на ноду из network-pool")
 		jobs         = flag.Int("jobs", 2, "максимум параллельных шагов (1 = строго последовательно)")
 		yes          = flag.Bool("yes", false, "принять все значения по умолчанию")

@@ -64,9 +64,26 @@ sudo /mnt/megapolos-bundle/installer --no-tui --yes   # headless
   установщик **не выполняет `docker swarm init`** (Swarm в native не нужен),
   пишет `networkMode` в `config.json` и фиксирует режим в systemd drop-in ядра.
 - `--network-pool=<CIDR>` + `--node-subnet-prefix=<N>` — F1: пул подсетей нод
-  (напр. `--network-pool=172.30.0.0/16 --node-subnet-prefix=24`). Нужен для
+  (напр. `--network-pool=10.99.0.0/16 --node-subnet-prefix=24`). Нужен для
   многонодового стенда: без пула обе ноды получат одну подсеть.
   Вторая нода подключается уже из интерфейса Megapolos (Add Node), не установщиком.
+
+  **Требования к пулу** (иначе прогон остановится на проверке H11):
+
+  1. Пул не должен пересекаться ни с одной LAN-сетью **любой** ноды кластера,
+     ни с `172.16.0.0/12` (диапазон Docker по умолчанию), ни с
+     `networkReservedSubnets`. Проверить на ноде до установки:
+     ```bash
+     ip -o -4 route show table all | grep -vE '^(default|broadcast|local)'
+     ```
+  2. При заданном пуле поле `Network subnet` у ноды в GUI оставляют **пустым** —
+     подсеть выделяется автоматически (`/nodeSubnetPrefix` внутри пула) и
+     записывается в `node.network_subnet`. Заполненное поле имеет приоритет
+     над пулом.
+  3. Смена пула на уже установленном стенде требует: очистить
+     `node.network_subnet` (иначе прежняя подсеть сохранится), удалить сеть
+     (`docker network rm megapolos`) и выполнить `Update` ноды — IPAM
+     существующей docker-сети сам не меняется.
 
 Настройки прогона (включая секреты для восстановления) сохраняются в
 `/var/lib/megapolos/installer.cfg` и подхватываются при `--resume`; явные
